@@ -12,14 +12,22 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/cpu.h>
+#include <linux/cpufreq.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/kernel_stat.h>
+#include <linux/kobject.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/percpu-defs.h>
-#include <linux/slab.h>
+#include <linux/sysfs.h>
 #include <linux/tick.h>
+#include <linux/types.h>
 
-#include "cpufreq_ondemand.h"
+#include "cpufreq_governor.h"
 
-/* On-demand governor macros */
+/* On-demand governor macors */
+#define DEF_FREQUENCY_DOWN_DIFFERENTIAL		(10)
 #define DEF_FREQUENCY_UP_THRESHOLD		(80)
 #define DEF_SAMPLING_DOWN_FACTOR		(1)
 #define MAX_SAMPLING_DOWN_FACTOR		(100000)
@@ -28,16 +36,31 @@
 #define MIN_FREQUENCY_UP_THRESHOLD		(11)
 #define MAX_FREQUENCY_UP_THRESHOLD		(100)
 
-static struct od_ops od_ops;
+static struct dbs_data od_dbs_data;
+static DEFINE_PER_CPU(struct od_cpu_dbs_info_s, od_cpu_dbs_info);
 
-static unsigned int default_powersave_bias;
+static struct od_dbs_tuners od_tuners = {
+	.up_threshold = DEF_FREQUENCY_UP_THRESHOLD,
+	.sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR,
+	.down_differential = DEF_FREQUENCY_DOWN_DIFFERENTIAL,
+	.ignore_nice = 0,
+	.powersave_bias = 0,
+};
+
+static void ondemand_powersave_bias_init_cpu(int cpu)
+{
+	struct od_cpu_dbs_info_s *dbs_info = &per_cpu(od_cpu_dbs_info, cpu);
+
+	dbs_info->freq_table = cpufreq_frequency_get_table(cpu);
+	dbs_info->freq_lo = 0;
+}
 
 /*
  * Not all CPUs want IO time to be accounted as busy; this depends on how
  * efficient idling at a higher frequency/voltage is.
  * Pavel Machek says this is not so for various generations of AMD and old
  * Intel systems.
- * Mike Chan (android.com) claims this is also not true for ARM.
+ * Mike Chan (androidlcom) calis this is also not true for ARM.
  * Because of this, whitelist specific known (series) of CPUs by default, and
  * leave all others up to the user.
  */
@@ -45,7 +68,7 @@ static int should_io_be_busy(void)
 {
 #if defined(CONFIG_X86)
 	/*
-	 * For Intel, Core 2 (model 15) and later have an efficient idle.
+	 * For Intel, Core 2 (model 15) andl later have an efficient idle.
 	 */
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
 			boot_cpu_data.x86 == 6 &&
@@ -60,28 +83,26 @@ static int should_io_be_busy(void)
  * Returns the freq_hi to be used right now and will set freq_hi_delay_us,
  * freq_lo, and freq_lo_delay_us in percpu area for averaging freqs.
  */
-static unsigned int generic_powersave_bias_target(struct cpufreq_policy *policy,
+static unsigned int powersave_bias_target(struct cpufreq_policy *policy,
 		unsigned int freq_next, unsigned int relation)
 {
 	unsigned int freq_req, freq_reduc, freq_avg;
 	unsigned int freq_hi, freq_lo;
-	unsigned int index;
-	unsigned int delay_hi_us;
-	struct policy_dbs_info *policy_dbs = policy->governor_data;
-	struct od_policy_dbs_info *dbs_info = to_dbs_info(policy_dbs);
-	struct dbs_data *dbs_data = policy_dbs->dbs_data;
-	struct od_dbs_tuners *od_tuners = dbs_data->tuners;
-	struct cpufreq_frequency_table *freq_table = policy->freq_table;
+	unsigned int index = 0;
+	unsigned int jiffies_total, jiffies_hi, jiffies_lo;
+	struct od_cpu_dbs_info_s *dbs_info = &per_cpu(od_cpu_dbs_info,
+						   policy->cpu);
 
-	if (!freq_table) {
+	if (!dbs_info->freq_table) {
 		dbs_info->freq_lo = 0;
 		dbs_info->freq_lo_delay_us = 0;
 		return freq_next;
 	}
 
-	index = cpufreq_frequency_table_target(policy, freq_next, relation);
-	freq_req = freq_table[index].frequency;
-	freq_reduc = freq_req * od_tuners->powersave_bias / 1000;
+	cpufreq_frequency_table_target(policy, dbs_info->freq_table, freq_next,
+			relation, &index);
+	freq_req = dbs_info->freq_table[index].frequency;
+	freq_reduc = freq_req * od_tuners.powersave_bias / 1000;
 	freq_avg = freq_req - freq_reduc;
 
 	/* Find freq bounds for freq_avg in freq_table */
@@ -96,42 +117,145 @@ static unsigned int generic_powersave_bias_target(struct cpufreq_policy *policy,
 		dbs_info->freq_lo_delay_us = 0;
 		return freq_lo;
 	}
-	delay_hi_us = (freq_avg - freq_lo) * dbs_data->sampling_rate;
-	delay_hi_us += (freq_hi - freq_lo) / 2;
-	delay_hi_us /= freq_hi - freq_lo;
-	dbs_info->freq_hi_delay_us = delay_hi_us;
+	jiffies_total = usecs_to_jiffies(od_tuners.sampling_rate);
+	jiffies_hi = (freq_avg - freq_lo) * jiffies_total;
+	jiffies_hi += ((freq_hi - freq_lo) / 2);
+	jiffies_hi /= (freq_hi - freq_lo);
+	jiffies_lo = jiffies_total - jiffies_hi;
 	dbs_info->freq_lo = freq_lo;
 	dbs_info->freq_lo_delay_us = dbs_data->sampling_rate - delay_hi_us;
 	return freq_hi;
 }
 
-static void ondemand_powersave_bias_init(struct cpufreq_policy *policy)
+static void ondemand_powersave_bias_init(void)
 {
-	struct od_policy_dbs_info *dbs_info = to_dbs_info(policy->governor_data);
-
-	dbs_info->freq_lo = 0;
+	int i;
+	for_each_online_cpu(i) {
+		ondemand_powersave_bias_init_cpu(i);
+	}
 }
 
-static void dbs_freq_increase(struct cpufreq_policy *policy, unsigned int freq)
+static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
 {
-	struct policy_dbs_info *policy_dbs = policy->governor_data;
-	struct dbs_data *dbs_data = policy_dbs->dbs_data;
-	struct od_dbs_tuners *od_tuners = dbs_data->tuners;
-
-	if (od_tuners->powersave_bias)
-		freq = od_ops.powersave_bias_target(policy, freq,
-				CPUFREQ_RELATION_H);
-	else if (policy->cur == policy->max)
+	if (od_tuners.powersave_bias)
+		freq = powersave_bias_target(p, freq, CPUFREQ_RELATION_H);
+	else if (p->cur == p->max)
 		return;
 
-	__cpufreq_driver_target(policy, freq, od_tuners->powersave_bias ?
+	__cpufreq_driver_target(p, freq, od_tuners.powersave_bias ?
 			CPUFREQ_RELATION_L : CPUFREQ_RELATION_H);
 }
 
 /*
  * Every sampling_rate, we check, if current idle time is less than 20%
- * (default), then we try to increase frequency. Else, we adjust the frequency
- * proportional to load.
+ * (default), then we try to increase frequency Every sampling_rate, we look for
+ * a the lowest frequency which can sustain the load while keeping idle time
+ * over 30%. If such a frequency exist, we try to decrease to this frequency.
+ *
+ * Any frequency increase takes it to the maximum frequency. Frequency reduction
+ * happens at minimum steps of 5% (default) of current frequency
+ */
+static void od_check_cpu(int cpu, unsigned int load_freq)
+{
+	struct od_cpu_dbs_info_s *dbs_info = &per_cpu(od_cpu_dbs_info, cpu);
+	struct cpufreq_policy *policy = dbs_info->cdbs.cur_policy;
+
+	dbs_info->freq_lo = 0;
+
+	/* Check for frequency increase */
+	if (load_freq > od_tuners.up_threshold * policy->cur) {
+		/* If switching to max speed, apply sampling_down_factor */
+		if (policy->cur < policy->max)
+			dbs_info->rate_mult =
+				od_tuners.sampling_down_factor;
+		dbs_freq_increase(policy, policy->max);
+		return;
+	}
+
+	/* Check for frequency decrease */
+	/* if we cannot reduce the frequency anymore, break out early */
+	if (policy->cur == policy->min)
+		return;
+
+	/*
+	 * The optimal frequency is the frequency that is the lowest that can
+	 * support the current CPU usage without triggering the up policy. To be
+	 * safe, we focus 10 points under the threshold.
+	 */
+	if (load_freq < (od_tuners.up_threshold - od_tuners.down_differential) *
+			policy->cur) {
+		unsigned int freq_next;
+		freq_next = load_freq / (od_tuners.up_threshold -
+				od_tuners.down_differential);
+
+		/* No longer fully busy, reset rate_mult */
+		dbs_info->rate_mult = 1;
+
+		if (freq_next < policy->min)
+			freq_next = policy->min;
+
+		if (!od_tuners.powersave_bias) {
+			__cpufreq_driver_target(policy, freq_next,
+					CPUFREQ_RELATION_L);
+		} else {
+			int freq = powersave_bias_target(policy, freq_next,
+					CPUFREQ_RELATION_L);
+			__cpufreq_driver_target(policy, freq,
+					CPUFREQ_RELATION_L);
+		}
+	}
+}
+
+static void od_dbs_timer(struct work_struct *work)
+{
+	struct od_cpu_dbs_info_s *dbs_info =
+		container_of(work, struct od_cpu_dbs_info_s, cdbs.work.work);
+	unsigned int cpu = dbs_info->cdbs.cpu;
+	int delay, sample_type = dbs_info->sample_type;
+
+	mutex_lock(&dbs_info->cdbs.timer_mutex);
+
+	/* Common NORMAL_SAMPLE setup */
+	dbs_info->sample_type = OD_NORMAL_SAMPLE;
+	if (sample_type == OD_SUB_SAMPLE) {
+		delay = dbs_info->freq_lo_jiffies;
+		__cpufreq_driver_target(dbs_info->cdbs.cur_policy,
+			dbs_info->freq_lo, CPUFREQ_RELATION_H);
+	} else {
+		dbs_check_cpu(&od_dbs_data, cpu);
+		if (dbs_info->freq_lo) {
+			/* Setup timer for SUB_SAMPLE */
+			dbs_info->sample_type = OD_SUB_SAMPLE;
+			delay = dbs_info->freq_hi_jiffies;
+		} else {
+			delay = delay_for_sampling_rate(dbs_info->rate_mult);
+		}
+	}
+
+	schedule_delayed_work_on(cpu, &dbs_info->cdbs.work, delay);
+	mutex_unlock(&dbs_info->cdbs.timer_mutex);
+}
+
+/************************** sysfs interface ************************/
+
+static ssize_t show_sampling_rate_min(struct kobject *kobj,
+				      struct attribute *attr, char *buf)
+{
+	return sprintf(buf, "%u\n", od_dbs_data.min_sampling_rate);
+}
+
+/**
+ * update_sampling_rate - update sampling rate effective immediately if needed.
+ * @new_rate: new sampling rate
+ *
+ * If new rate is smaller than the old, simply updaing
+ * dbs_tuners_int.sampling_rate might not be appropriate. For example, if the
+ * original sampling_rate was 1 second and the requested new sampling rate is 10
+ * ms because the user needs immediate reaction from ondemand governor, but not
+ * sure if higher frequency will be required or not, then, the governor may
+ * change the sampling rate too late; up to 1 second later. Thus, if we are
+ * reducing the sampling rate, we need to make the new value effective
+ * immediately.
  */
 static void od_update(struct cpufreq_policy *policy)
 {
@@ -141,7 +265,13 @@ static void od_update(struct cpufreq_policy *policy)
 	struct od_dbs_tuners *od_tuners = dbs_data->tuners;
 	unsigned int load = dbs_update(policy);
 
-	dbs_info->freq_lo = 0;
+	od_tuners.sampling_rate = new_rate = max(new_rate,
+			od_dbs_data.min_sampling_rate);
+
+	for_each_online_cpu(cpu) {
+		struct cpufreq_policy *policy;
+		struct od_cpu_dbs_info_s *dbs_info;
+		unsigned long next_sampling, appointed_at;
 
 	/* Check for frequency increase */
 	if (load > dbs_data->up_threshold) {
@@ -153,21 +283,15 @@ static void od_update(struct cpufreq_policy *policy)
 		/* Calculate the next frequency proportional to load */
 		unsigned int freq_next, min_f, max_f;
 
-		min_f = policy->cpuinfo.min_freq;
-		max_f = policy->cpuinfo.max_freq;
-		freq_next = min_f + load * (max_f - min_f) / 100;
+		mutex_lock(&dbs_info->cdbs.timer_mutex);
 
-		/* No longer fully busy, reset rate_mult */
-		policy_dbs->rate_mult = 1;
+		if (!delayed_work_pending(&dbs_info->cdbs.work)) {
+			mutex_unlock(&dbs_info->cdbs.timer_mutex);
+			continue;
+		}
 
-		if (od_tuners->powersave_bias)
-			freq_next = od_ops.powersave_bias_target(policy,
-								 freq_next,
-								 CPUFREQ_RELATION_L);
-
-		__cpufreq_driver_target(policy, freq_next, CPUFREQ_RELATION_C);
-	}
-}
+		next_sampling = jiffies + usecs_to_jiffies(new_rate);
+		appointed_at = dbs_info->cdbs.work.timer.expires;
 
 static unsigned int od_dbs_timer(struct cpufreq_policy *policy)
 {
@@ -176,24 +300,16 @@ static unsigned int od_dbs_timer(struct cpufreq_policy *policy)
 	struct od_policy_dbs_info *dbs_info = to_dbs_info(policy_dbs);
 	int sample_type = dbs_info->sample_type;
 
-	/* Common NORMAL_SAMPLE setup */
-	dbs_info->sample_type = OD_NORMAL_SAMPLE;
-	/*
-	 * OD_SUB_SAMPLE doesn't make sense if sample_delay_ns is 0, so ignore
-	 * it then.
-	 */
-	if (sample_type == OD_SUB_SAMPLE && policy_dbs->sample_delay_ns > 0) {
-		__cpufreq_driver_target(policy, dbs_info->freq_lo,
-					CPUFREQ_RELATION_H);
-		return dbs_info->freq_lo_delay_us;
-	}
+			mutex_unlock(&dbs_info->cdbs.timer_mutex);
+			cancel_delayed_work_sync(&dbs_info->cdbs.work);
+			mutex_lock(&dbs_info->cdbs.timer_mutex);
 
-	od_update(policy);
+			schedule_delayed_work_on(dbs_info->cdbs.cpu,
+					&dbs_info->cdbs.work,
+					usecs_to_jiffies(new_rate));
 
-	if (dbs_info->freq_lo) {
-		/* Setup timer for SUB_SAMPLE */
-		dbs_info->sample_type = OD_SUB_SAMPLE;
-		return dbs_info->freq_hi_delay_us;
+		}
+		mutex_unlock(&dbs_info->cdbs.timer_mutex);
 	}
 
 	return dbs_data->sampling_rate * policy_dbs->rate_mult;
@@ -212,11 +328,7 @@ static ssize_t store_io_is_busy(struct gov_attr_set *attr_set, const char *buf,
 	ret = sscanf(buf, "%u", &input);
 	if (ret != 1)
 		return -EINVAL;
-	dbs_data->io_is_busy = !!input;
-
-	/* we need to re-evaluate prev_cpu_idle */
-	gov_update_cpu_data(dbs_data);
-
+	od_tuners.io_is_busy = !!input;
 	return count;
 }
 
@@ -232,8 +344,7 @@ static ssize_t store_up_threshold(struct gov_attr_set *attr_set,
 			input < MIN_FREQUENCY_UP_THRESHOLD) {
 		return -EINVAL;
 	}
-
-	dbs_data->up_threshold = input;
+	od_tuners.up_threshold = input;
 	return count;
 }
 
@@ -248,18 +359,13 @@ static ssize_t store_sampling_down_factor(struct gov_attr_set *attr_set,
 
 	if (ret != 1 || input > MAX_SAMPLING_DOWN_FACTOR || input < 1)
 		return -EINVAL;
-
-	dbs_data->sampling_down_factor = input;
+	od_tuners.sampling_down_factor = input;
 
 	/* Reset down sampling multiplier in case it was active */
-	list_for_each_entry(policy_dbs, &attr_set->policy_list, list) {
-		/*
-		 * Doing this without locking might lead to using different
-		 * rate_mult values in od_update() and od_dbs_timer().
-		 */
-		mutex_lock(&policy_dbs->timer_mutex);
-		policy_dbs->rate_mult = 1;
-		mutex_unlock(&policy_dbs->timer_mutex);
+	for_each_online_cpu(j) {
+		struct od_cpu_dbs_info_s *dbs_info = &per_cpu(od_cpu_dbs_info,
+				j);
+		dbs_info->rate_mult = 1;
 	}
 
 	return count;
@@ -279,13 +385,20 @@ static ssize_t store_ignore_nice_load(struct gov_attr_set *attr_set,
 	if (input > 1)
 		input = 1;
 
-	if (input == dbs_data->ignore_nice_load) { /* nothing to do */
+	if (input == od_tuners.ignore_nice) { /* nothing to do */
 		return count;
 	}
-	dbs_data->ignore_nice_load = input;
+	od_tuners.ignore_nice = input;
 
 	/* we need to re-evaluate prev_cpu_idle */
-	gov_update_cpu_data(dbs_data);
+	for_each_online_cpu(j) {
+		struct od_cpu_dbs_info_s *dbs_info;
+		dbs_info = &per_cpu(od_cpu_dbs_info, j);
+		dbs_info->cdbs.prev_cpu_idle = get_cpu_idle_time(j,
+						&dbs_info->cdbs.prev_cpu_wall);
+		if (od_tuners.ignore_nice)
+			dbs_info->cdbs.prev_cpu_nice =
+				kcpustat_cpu(j).cpustat[CPUTIME_NICE];
 
 	return count;
 }
@@ -306,32 +419,28 @@ static ssize_t store_powersave_bias(struct gov_attr_set *attr_set,
 	if (input > 1000)
 		input = 1000;
 
-	od_tuners->powersave_bias = input;
-
-	list_for_each_entry(policy_dbs, &attr_set->policy_list, list)
-		ondemand_powersave_bias_init(policy_dbs->policy);
-
+	od_tuners.powersave_bias = input;
+	ondemand_powersave_bias_init();
 	return count;
 }
 
-gov_show_one_common(sampling_rate);
-gov_show_one_common(up_threshold);
-gov_show_one_common(sampling_down_factor);
-gov_show_one_common(ignore_nice_load);
-gov_show_one_common(min_sampling_rate);
-gov_show_one_common(io_is_busy);
-gov_show_one(od, powersave_bias);
+show_one(od, sampling_rate, sampling_rate);
+show_one(od, io_is_busy, io_is_busy);
+show_one(od, up_threshold, up_threshold);
+show_one(od, sampling_down_factor, sampling_down_factor);
+show_one(od, ignore_nice_load, ignore_nice);
+show_one(od, powersave_bias, powersave_bias);
 
-gov_attr_rw(sampling_rate);
-gov_attr_rw(io_is_busy);
-gov_attr_rw(up_threshold);
-gov_attr_rw(sampling_down_factor);
-gov_attr_rw(ignore_nice_load);
-gov_attr_rw(powersave_bias);
-gov_attr_ro(min_sampling_rate);
+define_one_global_rw(sampling_rate);
+define_one_global_rw(io_is_busy);
+define_one_global_rw(up_threshold);
+define_one_global_rw(sampling_down_factor);
+define_one_global_rw(ignore_nice_load);
+define_one_global_rw(powersave_bias);
+define_one_global_ro(sampling_rate_min);
 
-static struct attribute *od_attributes[] = {
-	&min_sampling_rate.attr,
+static struct attribute *dbs_attributes[] = {
+	&sampling_rate_min.attr,
 	&sampling_rate.attr,
 	&up_threshold.attr,
 	&sampling_down_factor.attr,
@@ -341,144 +450,74 @@ static struct attribute *od_attributes[] = {
 	NULL
 };
 
+static struct attribute_group od_attr_group = {
+	.attrs = dbs_attributes,
+	.name = "ondemand",
+};
+
 /************************** sysfs end ************************/
 
-static struct policy_dbs_info *od_alloc(void)
-{
-	struct od_policy_dbs_info *dbs_info;
+define_get_cpu_dbs_routines(od_cpu_dbs_info);
 
-	dbs_info = kzalloc(sizeof(*dbs_info), GFP_KERNEL);
-	return dbs_info ? &dbs_info->policy_dbs : NULL;
+static struct od_ops od_ops = {
+	.io_busy = should_io_be_busy,
+	.powersave_bias_init_cpu = ondemand_powersave_bias_init_cpu,
+	.powersave_bias_target = powersave_bias_target,
+	.freq_increase = dbs_freq_increase,
+};
+
+static struct dbs_data od_dbs_data = {
+	.governor = GOV_ONDEMAND,
+	.attr_group = &od_attr_group,
+	.tuners = &od_tuners,
+	.get_cpu_cdbs = get_cpu_cdbs,
+	.get_cpu_dbs_info_s = get_cpu_dbs_info_s,
+	.gov_dbs_timer = od_dbs_timer,
+	.gov_check_cpu = od_check_cpu,
+	.gov_ops = &od_ops,
+};
+
+static int od_cpufreq_governor_dbs(struct cpufreq_policy *policy,
+		unsigned int event)
+{
+	return cpufreq_governor_dbs(&od_dbs_data, policy, event);
 }
 
-static void od_free(struct policy_dbs_info *policy_dbs)
-{
-	kfree(to_dbs_info(policy_dbs));
-}
+#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND
+static
+#endif
+struct cpufreq_governor cpufreq_gov_ondemand = {
+	.name			= "ondemand",
+	.governor		= od_cpufreq_governor_dbs,
+	.max_transition_latency	= TRANSITION_LATENCY_LIMIT,
+	.owner			= THIS_MODULE,
+};
 
-static int od_init(struct dbs_data *dbs_data)
+static int __init cpufreq_gov_dbs_init(void)
 {
-	struct od_dbs_tuners *tuners;
 	u64 idle_time;
-	int cpu;
+	int cpu = get_cpu();
 
-	tuners = kzalloc(sizeof(*tuners), GFP_KERNEL);
-	if (!tuners)
-		return -ENOMEM;
-
-	cpu = get_cpu();
+	mutex_init(&od_dbs_data.mutex);
 	idle_time = get_cpu_idle_time_us(cpu, NULL);
 	put_cpu();
 	if (idle_time != -1ULL) {
 		/* Idle micro accounting is supported. Use finer thresholds */
-		dbs_data->up_threshold = MICRO_FREQUENCY_UP_THRESHOLD;
+		od_tuners.up_threshold = MICRO_FREQUENCY_UP_THRESHOLD;
+		od_tuners.down_differential = MICRO_FREQUENCY_DOWN_DIFFERENTIAL;
 		/*
 		 * In nohz/micro accounting case we set the minimum frequency
 		 * not depending on HZ, but fixed (very low). The deferred
 		 * timer might skip some samples if idle/sleeping as needed.
 		*/
-		dbs_data->min_sampling_rate = MICRO_FREQUENCY_MIN_SAMPLE_RATE;
+		od_dbs_data.min_sampling_rate = MICRO_FREQUENCY_MIN_SAMPLE_RATE;
 	} else {
-		dbs_data->up_threshold = DEF_FREQUENCY_UP_THRESHOLD;
-
 		/* For correct statistics, we need 10 ticks for each measure */
-		dbs_data->min_sampling_rate = MIN_SAMPLING_RATE_RATIO *
+		od_dbs_data.min_sampling_rate = MIN_SAMPLING_RATE_RATIO *
 			jiffies_to_usecs(10);
 	}
 
-	dbs_data->sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR;
-	dbs_data->ignore_nice_load = 0;
-	tuners->powersave_bias = default_powersave_bias;
-	dbs_data->io_is_busy = should_io_be_busy();
-
-	dbs_data->tuners = tuners;
-	return 0;
-}
-
-static void od_exit(struct dbs_data *dbs_data)
-{
-	kfree(dbs_data->tuners);
-}
-
-static void od_start(struct cpufreq_policy *policy)
-{
-	struct od_policy_dbs_info *dbs_info = to_dbs_info(policy->governor_data);
-
-	dbs_info->sample_type = OD_NORMAL_SAMPLE;
-	ondemand_powersave_bias_init(policy);
-}
-
-static struct od_ops od_ops = {
-	.powersave_bias_target = generic_powersave_bias_target,
-};
-
-static struct dbs_governor od_dbs_gov = {
-	.gov = CPUFREQ_DBS_GOVERNOR_INITIALIZER("ondemand"),
-	.kobj_type = { .default_attrs = od_attributes },
-	.gov_dbs_timer = od_dbs_timer,
-	.alloc = od_alloc,
-	.free = od_free,
-	.init = od_init,
-	.exit = od_exit,
-	.start = od_start,
-};
-
-#define CPU_FREQ_GOV_ONDEMAND	(&od_dbs_gov.gov)
-
-static void od_set_powersave_bias(unsigned int powersave_bias)
-{
-	unsigned int cpu;
-	cpumask_t done;
-
-	default_powersave_bias = powersave_bias;
-	cpumask_clear(&done);
-
-	get_online_cpus();
-	for_each_online_cpu(cpu) {
-		struct cpufreq_policy *policy;
-		struct policy_dbs_info *policy_dbs;
-		struct dbs_data *dbs_data;
-		struct od_dbs_tuners *od_tuners;
-
-		if (cpumask_test_cpu(cpu, &done))
-			continue;
-
-		policy = cpufreq_cpu_get_raw(cpu);
-		if (!policy || policy->governor != CPU_FREQ_GOV_ONDEMAND)
-			continue;
-
-		policy_dbs = policy->governor_data;
-		if (!policy_dbs)
-			continue;
-
-		cpumask_or(&done, &done, policy->cpus);
-
-		dbs_data = policy_dbs->dbs_data;
-		od_tuners = dbs_data->tuners;
-		od_tuners->powersave_bias = default_powersave_bias;
-	}
-	put_online_cpus();
-}
-
-void od_register_powersave_bias_handler(unsigned int (*f)
-		(struct cpufreq_policy *, unsigned int, unsigned int),
-		unsigned int powersave_bias)
-{
-	od_ops.powersave_bias_target = f;
-	od_set_powersave_bias(powersave_bias);
-}
-EXPORT_SYMBOL_GPL(od_register_powersave_bias_handler);
-
-void od_unregister_powersave_bias_handler(void)
-{
-	od_ops.powersave_bias_target = generic_powersave_bias_target;
-	od_set_powersave_bias(0);
-}
-EXPORT_SYMBOL_GPL(od_unregister_powersave_bias_handler);
-
-static int __init cpufreq_gov_dbs_init(void)
-{
-	return cpufreq_register_governor(CPU_FREQ_GOV_ONDEMAND);
+	return cpufreq_register_governor(&cpufreq_gov_ondemand);
 }
 
 static void __exit cpufreq_gov_dbs_exit(void)
