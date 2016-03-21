@@ -79,11 +79,7 @@ static inline bool has_target(void)
 
 /* internal prototypes */
 static unsigned int __cpufreq_get(struct cpufreq_policy *policy);
-static int cpufreq_init_governor(struct cpufreq_policy *policy);
-static void cpufreq_exit_governor(struct cpufreq_policy *policy);
 static int cpufreq_start_governor(struct cpufreq_policy *policy);
-static void cpufreq_stop_governor(struct cpufreq_policy *policy);
-static void cpufreq_governor_limits(struct cpufreq_policy *policy);
 
 /**
  * Two notifier lists: the "policy" list is involved in the
@@ -2246,6 +2242,14 @@ static void cpufreq_governor_limits(struct cpufreq_policy *policy)
 		policy->governor->limits(policy);
 }
 
+static int cpufreq_start_governor(struct cpufreq_policy *policy)
+{
+	int ret;
+
+	ret = cpufreq_governor(policy, CPUFREQ_GOV_START);
+	return ret ? ret : cpufreq_governor(policy, CPUFREQ_GOV_LIMITS);
+}
+
 int cpufreq_register_governor(struct cpufreq_governor *governor)
 {
 	int err;
@@ -2402,8 +2406,7 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 
 	if (new_policy->governor == policy->governor) {
 		pr_debug("cpufreq: governor limits update\n");
-		cpufreq_governor_limits(policy);
-		return 0;
+		return cpufreq_governor(policy, CPUFREQ_GOV_LIMITS);
 	}
 
 	pr_debug("governor switch\n");
@@ -2425,7 +2428,7 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 			pr_debug("cpufreq: governor change\n");
 			return 0;
 		}
-		cpufreq_exit_governor(policy);
+		cpufreq_governor(policy, CPUFREQ_GOV_POLICY_EXIT);
 	}
 
 	/* new governor failed, so re-start old one */
