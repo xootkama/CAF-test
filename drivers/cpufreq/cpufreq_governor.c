@@ -95,7 +95,18 @@ EXPORT_SYMBOL_GPL(store_sampling_rate);
  */
 void gov_update_cpu_data(struct dbs_data *dbs_data)
 {
-	struct policy_dbs_info *policy_dbs;
+	struct cpu_dbs_common_info *cdbs = dbs_data->cdata->get_cpu_cdbs(cpu);
+	struct od_dbs_tuners *od_tuners = dbs_data->tuners;
+	struct cs_dbs_tuners *cs_tuners = dbs_data->tuners;
+	struct ac_dbs_tuners *ac_tuners = dbs_data->tuners;
+	struct dk_dbs_tuners *dk_tuners = dbs_data->tuners;
+	struct nm_dbs_tuners *nm_tuners = dbs_data->tuners;
+	struct cpufreq_policy *policy;
+	unsigned int sampling_rate;
+	unsigned int max_load = 0;
+	unsigned int ignore_nice;
+	unsigned int j;
+	struct cpufreq_govinfo govinfo;
 
 	list_for_each_entry(policy_dbs, &dbs_data->attr_set.policy_list, list) {
 		unsigned int j;
@@ -103,11 +114,19 @@ void gov_update_cpu_data(struct dbs_data *dbs_data)
 		for_each_cpu(j, policy_dbs->policy->cpus) {
 			struct cpu_dbs_info *j_cdbs = &per_cpu(cpu_dbs, j);
 
-			j_cdbs->prev_cpu_idle = get_cpu_idle_time(j, &j_cdbs->prev_update_time,
-								  dbs_data->io_is_busy);
-			if (dbs_data->ignore_nice_load)
-				j_cdbs->prev_cpu_nice = kcpustat_cpu(j).cpustat[CPUTIME_NICE];
-		}
+		ignore_nice = od_tuners->ignore_nice_load;
+	} else if (dbs_data->cdata->governor == GOV_ALUCARD) {
+		sampling_rate = ac_tuners->sampling_rate;
+		ignore_nice = ac_tuners->ignore_nice_load;
+	} else if (dbs_data->cdata->governor == GOV_DARKNESS) {
+		sampling_rate = dk_tuners->sampling_rate;
+		ignore_nice = dk_tuners->ignore_nice_load;
+	} else if (dbs_data->cdata->governor == GOV_NIGHTMARE) {
+		sampling_rate = nm_tuners->sampling_rate;
+		ignore_nice = nm_tuners->ignore_nice_load;
+	} else {
+		sampling_rate = cs_tuners->sampling_rate;
+		ignore_nice = cs_tuners->ignore_nice_load;
 	}
 }
 EXPORT_SYMBOL_GPL(gov_update_cpu_data);
@@ -214,6 +233,19 @@ unsigned int dbs_update(struct cpufreq_policy *policy)
 			}
 			j_cdbs->prev_load = load;
 		}
+
+		/*
+		 * Send govinfo notification.
+		 * Govinfo notification could potentially wake up another thread
+		 * managed by its clients. Thread wakeups might trigger a load
+		 * change callback that executes this function again. Therefore
+		 * no spinlock could be held when sending the notification.
+		 */
+		govinfo.cpu = j;
+		govinfo.load = load;
+		govinfo.sampling_rate_us = sampling_rate;
+		atomic_notifier_call_chain(&cpufreq_govinfo_notifier_list,
+						   CPUFREQ_LOAD_CHANGE, &govinfo);
 
 		if (load > max_load)
 			max_load = load;
@@ -339,25 +371,26 @@ static inline void gov_clear_update_util(struct cpufreq_policy *policy)
 static struct policy_dbs_info *alloc_policy_dbs_info(struct cpufreq_policy *policy,
 						     struct dbs_governor *gov)
 {
-	struct policy_dbs_info *policy_dbs;
-	int j;
-
-	/* Allocate memory for per-policy governor data. */
-	policy_dbs = gov->alloc();
-	if (!policy_dbs)
-		return NULL;
-
-	policy_dbs->policy = policy;
-	mutex_init(&policy_dbs->timer_mutex);
-	atomic_set(&policy_dbs->work_count, 0);
-	init_irq_work(&policy_dbs->irq_work, dbs_irq_work);
-	INIT_WORK(&policy_dbs->work, dbs_work_handler);
-
-	/* Set policy_dbs for all CPUs, online+offline */
-	for_each_cpu(j, policy->related_cpus) {
-		struct cpu_dbs_info *j_cdbs = &per_cpu(cpu_dbs, j);
-
-		j_cdbs->policy_dbs = policy_dbs;
+	if (dbs_data->cdata->governor == GOV_CONSERVATIVE) {
+		struct cs_dbs_tuners *cs_tuners = dbs_data->tuners;
+		cs_tuners->sampling_rate = max(cs_tuners->sampling_rate,
+			sampling_rate);
+	} else if (dbs_data->cdata->governor == GOV_ALUCARD) {
+		struct ac_dbs_tuners *ac_tuners = dbs_data->tuners;
+		ac_tuners->sampling_rate = max(ac_tuners->sampling_rate, 
+			sampling_rate);
+	} else if (dbs_data->cdata->governor == GOV_DARKNESS) {
+		struct dk_dbs_tuners *dk_tuners = dbs_data->tuners;
+		dk_tuners->sampling_rate = max(dk_tuners->sampling_rate, 
+			sampling_rate);
+	} else if (dbs_data->cdata->governor == GOV_NIGHTMARE) {
+		struct nm_dbs_tuners *nm_tuners = dbs_data->tuners;
+		nm_tuners->sampling_rate = max(nm_tuners->sampling_rate, 
+			sampling_rate);
+	} else {
+		struct od_dbs_tuners *od_tuners = dbs_data->tuners;
+		od_tuners->sampling_rate = max(od_tuners->sampling_rate, 
+			sampling_rate);
 	}
 	return policy_dbs;
 }
@@ -365,7 +398,42 @@ static struct policy_dbs_info *alloc_policy_dbs_info(struct cpufreq_policy *poli
 static void free_policy_dbs_info(struct policy_dbs_info *policy_dbs,
 				 struct dbs_governor *gov)
 {
-	int j;
+	struct dbs_data *dbs_data;
+	struct od_cpu_dbs_info_s *od_dbs_info = NULL;
+	struct cs_cpu_dbs_info_s *cs_dbs_info = NULL;
+	struct ac_cpu_dbs_info_s *ac_dbs_info = NULL;
+	struct dk_cpu_dbs_info_s *dk_dbs_info = NULL;
+	struct nm_cpu_dbs_info_s *nm_dbs_info = NULL;
+	struct od_ops *od_ops = NULL;
+	struct ac_ops *ac_ops = NULL;
+	struct dk_ops *dk_ops = NULL;
+	struct nm_ops *nm_ops = NULL;
+	struct od_dbs_tuners *od_tuners = NULL;
+	struct cs_dbs_tuners *cs_tuners = NULL;
+	struct ac_dbs_tuners *ac_tuners = NULL;
+	struct dk_dbs_tuners *dk_tuners = NULL;
+	struct nm_dbs_tuners *nm_tuners = NULL;
+	struct cpu_dbs_common_info *cpu_cdbs;
+	unsigned int sampling_rate, latency, ignore_nice, j, cpu = policy->cpu;
+	int io_busy = 0;
+	int rc;
+
+	if (have_governor_per_policy())
+		dbs_data = policy->governor_data;
+	else
+		dbs_data = cdata->gdbs_data;
+
+	WARN_ON(!dbs_data && (event != CPUFREQ_GOV_POLICY_INIT));
+
+	switch (event) {
+	case CPUFREQ_GOV_POLICY_INIT:
+		if (have_governor_per_policy()) {
+			WARN_ON(dbs_data);
+		} else if (dbs_data) {
+			dbs_data->usage_count++;
+			policy->governor_data = dbs_data;
+			return 0;
+		}
 
 	mutex_destroy(&policy_dbs->timer_mutex);
 
@@ -453,10 +521,39 @@ int cpufreq_dbs_governor_init(struct cpufreq_policy *policy)
 
 	policy->governor_data = NULL;
 
-	if (!have_governor_per_policy())
-		gov->gdbs_data = NULL;
-	gov->exit(dbs_data);
-	kfree(dbs_data);
+	cpu_cdbs = dbs_data->cdata->get_cpu_cdbs(cpu);
+
+	if (dbs_data->cdata->governor == GOV_CONSERVATIVE) {
+		cs_tuners = dbs_data->tuners;
+		cs_dbs_info = dbs_data->cdata->get_cpu_dbs_info_s(cpu);
+		sampling_rate = cs_tuners->sampling_rate;
+		ignore_nice = cs_tuners->ignore_nice_load;
+	} else if (dbs_data->cdata->governor == GOV_ALUCARD) {
+		ac_tuners = dbs_data->tuners;
+		ac_dbs_info = dbs_data->cdata->get_cpu_dbs_info_s(cpu);
+		sampling_rate = ac_tuners->sampling_rate;
+		ignore_nice = ac_tuners->ignore_nice_load;
+		ac_ops = dbs_data->cdata->gov_ops;
+	} else if (dbs_data->cdata->governor == GOV_DARKNESS) {
+		dk_tuners = dbs_data->tuners;
+		dk_dbs_info = dbs_data->cdata->get_cpu_dbs_info_s(cpu);
+		sampling_rate = dk_tuners->sampling_rate;
+		ignore_nice = dk_tuners->ignore_nice_load;
+		dk_ops = dbs_data->cdata->gov_ops;
+	} else if (dbs_data->cdata->governor == GOV_NIGHTMARE) {
+		nm_tuners = dbs_data->tuners;
+		nm_dbs_info = dbs_data->cdata->get_cpu_dbs_info_s(cpu);
+		sampling_rate = nm_tuners->sampling_rate;
+		ignore_nice = nm_tuners->ignore_nice_load;
+		nm_ops = dbs_data->cdata->gov_ops;
+	} else {
+		od_tuners = dbs_data->tuners;
+		od_dbs_info = dbs_data->cdata->get_cpu_dbs_info_s(cpu);
+		sampling_rate = od_tuners->sampling_rate;
+		ignore_nice = od_tuners->ignore_nice_load;
+		od_ops = dbs_data->cdata->gov_ops;
+		io_busy = od_tuners->io_is_busy;
+	}
 
 free_policy_dbs_info:
 	free_policy_dbs_info(policy_dbs, gov);
@@ -485,9 +582,24 @@ void cpufreq_dbs_governor_exit(struct cpufreq_policy *policy)
 		if (!have_governor_per_policy())
 			gov->gdbs_data = NULL;
 
-		gov->exit(dbs_data);
-		kfree(dbs_data);
-	}
+		if (dbs_data->cdata->governor == GOV_CONSERVATIVE) {
+			cs_dbs_info->down_skip = 0;
+			cs_dbs_info->enable = 1;
+			cs_dbs_info->requested_freq = policy->cur;
+		} else if (dbs_data->cdata->governor == GOV_ALUCARD) {
+			ac_ops->get_cpu_frequency_table(cpu);
+			ac_ops->get_cpu_frequency_table_minmax(policy, cpu);
+			ac_dbs_info->up_rate = 1;
+			ac_dbs_info->down_rate = 1;
+		} else if (dbs_data->cdata->governor == GOV_DARKNESS) {
+			dk_ops->get_cpu_frequency_table(cpu);
+		} else if (dbs_data->cdata->governor == GOV_NIGHTMARE) {
+			nm_ops->get_cpu_frequency_table(cpu);
+		} else {
+			od_dbs_info->rate_mult = 1;
+			od_dbs_info->sample_type = OD_NORMAL_SAMPLE;
+			od_ops->powersave_bias_init_cpu(cpu);
+		}
 
 	free_policy_dbs_info(policy_dbs, gov);
 
