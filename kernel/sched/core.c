@@ -25,6 +25,17 @@
  *  2007-11-29  RT balancing improvements by Steven Rostedt, Gregory Haskins,
  *              Thomas Gleixner, Mike Kravetz
  */
+#include <linux/sched.h>
+#include <linux/sched/clock.h>
+#include <uapi/linux/sched/types.h>
+#include <linux/sched/loadavg.h>
+#include <linux/sched/hotplug.h>
+#include <linux/wait_bit.h>
+#include <linux/cpuset.h>
+#include <linux/delayacct.h>
+#include <linux/init_task.h>
+#include <linux/context_tracking.h>
+#include <linux/rcupdate_wait.h>
 
 #include <linux/kasan.h>
 #include <linux/mm.h>
@@ -8232,8 +8243,8 @@ void __init sched_init(void)
 	int i, j;
 	unsigned long alloc_size = 0, ptr;
 
-	for (i = 0; i < WAIT_TABLE_SIZE; i++)
-		init_waitqueue_head(bit_wait_table + i);
+	sched_clock_init();
+	wait_bit_init();
 
 	sched_boost_parse_dt();
 	init_clusters();
