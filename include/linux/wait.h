@@ -24,6 +24,7 @@ struct __wait_queue {
 	struct list_head	task_list;
 };
 
+<<<<<<< HEAD
 struct wait_bit_key {
 	void			*flags;
 	int			bit_nr;
@@ -37,6 +38,9 @@ struct wait_bit_queue {
 };
 
 struct __wait_queue_head {
+=======
+struct wait_queue_head {
+>>>>>>> 5dd43ce2f69d (sched/wait: Split out the wait_bit*() APIs from <linux/wait.h> into <linux/wait_bit.h>)
 	spinlock_t		lock;
 	struct list_head	task_list;
 };
@@ -63,6 +67,7 @@ struct task_struct;
 #define DECLARE_WAIT_QUEUE_HEAD(name) \
 	wait_queue_head_t name = __WAIT_QUEUE_HEAD_INITIALIZER(name)
 
+<<<<<<< HEAD
 #define __WAIT_BIT_KEY_INITIALIZER(word, bit)				\
 	{ .flags = word, .bit_nr = bit, }
 
@@ -70,6 +75,9 @@ struct task_struct;
 	{ .flags = p, .bit_nr = WAIT_ATOMIC_T_BIT_NR, }
 
 extern void __init_waitqueue_head(wait_queue_head_t *q, const char *name, struct lock_class_key *);
+=======
+extern void __init_waitqueue_head(struct wait_queue_head *wq_head, const char *name, struct lock_class_key *);
+>>>>>>> 5dd43ce2f69d (sched/wait: Split out the wait_bit*() APIs from <linux/wait.h> into <linux/wait_bit.h>)
 
 #define init_waitqueue_head(q)				\
 	do {						\
@@ -196,6 +204,7 @@ __remove_wait_queue(wait_queue_head_t *head, wait_queue_t *old)
 	list_del(&old->task_list);
 }
 
+<<<<<<< HEAD
 typedef int wait_bit_action_f(struct wait_bit_key *, int mode);
 void __wake_up(wait_queue_head_t *q, unsigned int mode, int nr, void *key);
 void __wake_up_locked_key(wait_queue_head_t *q, unsigned int mode, void *key);
@@ -212,6 +221,13 @@ int out_of_line_wait_on_bit_timeout(void *, int, wait_bit_action_f *, unsigned, 
 int out_of_line_wait_on_bit_lock(void *, int, wait_bit_action_f *, unsigned);
 int out_of_line_wait_on_atomic_t(atomic_t *, int (*)(atomic_t *), unsigned);
 wait_queue_head_t *bit_waitqueue(void *, int);
+=======
+void __wake_up(struct wait_queue_head *wq_head, unsigned int mode, int nr, void *key);
+void __wake_up_locked_key(struct wait_queue_head *wq_head, unsigned int mode, void *key);
+void __wake_up_sync_key(struct wait_queue_head *wq_head, unsigned int mode, int nr, void *key);
+void __wake_up_locked(struct wait_queue_head *wq_head, unsigned int mode, int nr);
+void __wake_up_sync(struct wait_queue_head *wq_head, unsigned int mode, int nr);
+>>>>>>> 5dd43ce2f69d (sched/wait: Split out the wait_bit*() APIs from <linux/wait.h> into <linux/wait_bit.h>)
 
 #define wake_up(x)			__wake_up(x, TASK_NORMAL, 1, NULL)
 #define wake_up_nr(x, nr)		__wake_up(x, TASK_NORMAL, nr, NULL)
@@ -981,6 +997,7 @@ do {									\
 /*
  * Waitqueues which are removed from the waitqueue_head at wakeup time
  */
+<<<<<<< HEAD
 void prepare_to_wait(wait_queue_head_t *q, wait_queue_t *wait, int state);
 void prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_t *wait, int state);
 long prepare_to_wait_event(wait_queue_head_t *q, wait_queue_t *wait, int state);
@@ -995,10 +1012,26 @@ int wake_bit_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
 		.private	= current,				\
 		.func		= function,				\
 		.task_list	= LIST_HEAD_INIT((name).task_list),	\
+=======
+void prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
+void prepare_to_wait_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
+long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
+void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
+long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout);
+int woken_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
+int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
+
+#define DEFINE_WAIT_FUNC(name, function)					\
+	struct wait_queue_entry name = {					\
+		.private	= current,					\
+		.func		= function,					\
+		.task_list	= LIST_HEAD_INIT((name).task_list),		\
+>>>>>>> 5dd43ce2f69d (sched/wait: Split out the wait_bit*() APIs from <linux/wait.h> into <linux/wait_bit.h>)
 	}
 
 #define DEFINE_WAIT(name) DEFINE_WAIT_FUNC(name, autoremove_wake_function)
 
+<<<<<<< HEAD
 #define DEFINE_WAIT_BIT(name, word, bit)				\
 	struct wait_bit_queue name = {					\
 		.key = __WAIT_BIT_KEY_INITIALIZER(word, bit),		\
@@ -1227,4 +1260,14 @@ int wait_on_atomic_t(atomic_t *val, int (*action)(atomic_t *), unsigned mode)
 	return out_of_line_wait_on_atomic_t(val, action, mode);
 }
 
+=======
+#define init_wait(wait)								\
+	do {									\
+		(wait)->private = current;					\
+		(wait)->func = autoremove_wake_function;			\
+		INIT_LIST_HEAD(&(wait)->task_list);				\
+		(wait)->flags = 0;						\
+	} while (0)
+
+>>>>>>> 5dd43ce2f69d (sched/wait: Split out the wait_bit*() APIs from <linux/wait.h> into <linux/wait_bit.h>)
 #endif /* _LINUX_WAIT_H */

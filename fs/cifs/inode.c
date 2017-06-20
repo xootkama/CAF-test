@@ -23,6 +23,9 @@
 #include <linux/slab.h>
 #include <linux/pagemap.h>
 #include <linux/freezer.h>
+#include <linux/sched/signal.h>
+#include <linux/wait_bit.h>
+
 #include <asm/div64.h>
 #include "cifsfs.h"
 #include "cifspdu.h"
