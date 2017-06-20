@@ -49,7 +49,7 @@ struct task_struct;
 	.task_list	= { &(name).task_list, &(name).task_list } }
 
 #define DECLARE_WAIT_QUEUE_HEAD(name) \
-	wait_queue_head_t name = __WAIT_QUEUE_HEAD_INITIALIZER(name)
+	struct wait_queue_head name = __WAIT_QUEUE_HEAD_INITIALIZER(name)
 
 extern void __init_waitqueue_head(struct wait_queue_head *wq_head, const char *name, struct lock_class_key *);
 
