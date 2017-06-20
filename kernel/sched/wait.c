@@ -15,7 +15,7 @@ void __init_waitqueue_head(struct wait_queue_head *wq_head, const char *name, st
 {
 	spin_lock_init(&wq_head->lock);
 	lockdep_set_class_and_name(&wq_head->lock, key, name);
-	INIT_LIST_HEAD(&wq_head->task_list);
+	INIT_LIST_HEAD(&wq_head->head);
 }
 
 EXPORT_SYMBOL(__init_waitqueue_head);
@@ -67,7 +67,7 @@ static void __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
 {
 	wait_queue_t *curr, *next;
 
-	list_for_each_entry_safe(curr, next, &wq_head->task_list, task_list) {
+	list_for_each_entry_safe(curr, next, &wq_head->head, entry) {
 		unsigned flags = curr->flags;
 
 		if (curr->func(curr, mode, wake_flags, key) &&
@@ -175,7 +175,7 @@ prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_ent
 
 	wq_entry->flags &= ~WQ_FLAG_EXCLUSIVE;
 	spin_lock_irqsave(&wq_head->lock, flags);
-	if (list_empty(&wq_entry->task_list))
+	if (list_empty(&wq_entry->entry))
 		__add_wait_queue(wq_head, wq_entry);
 	set_current_state(state);
 	spin_unlock_irqrestore(&wq_head->lock, flags);
@@ -189,7 +189,7 @@ prepare_to_wait_exclusive(struct wait_queue_head *wq_head, struct wait_queue_ent
 
 	wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
 	spin_lock_irqsave(&wq_head->lock, flags);
-	if (list_empty(&wq_entry->task_list))
+	if (list_empty(&wq_entry->entry))
 		__add_wait_queue_entry_tail(wq_head, wq_entry);
 	set_current_state(state);
 	spin_unlock_irqrestore(&wq_head->lock, flags);
@@ -198,10 +198,10 @@ EXPORT_SYMBOL(prepare_to_wait_exclusive);
 
 void init_wait_entry(wait_queue_t *wait, int flags)
 {
-	wait->flags = flags;
-	wait->private = current;
-	wait->func = autoremove_wake_function;
-	INIT_LIST_HEAD(&wait->task_list);
+	wq_entry->flags = flags;
+	wq_entry->private = current;
+	wq_entry->func = autoremove_wake_function;
+	INIT_LIST_HEAD(&wq_entry->entry);
 }
 EXPORT_SYMBOL(init_wait_entry);
 
@@ -224,10 +224,10 @@ long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_en
 		 * can't see us, it should wake up another exclusive waiter if
 		 * we fail.
 		 */
-		list_del_init(&wait->task_list);
+		list_del_init(&wq_entry->entry);
 		ret = -ERESTARTSYS;
 	} else {
-		if (list_empty(&wq_entry->task_list)) {
+		if (list_empty(&wq_entry->entry)) {
 			if (wq_entry->flags & WQ_FLAG_EXCLUSIVE)
 				__add_wait_queue_entry_tail(wq_head, wq_entry);
 			else
@@ -240,6 +240,45 @@ long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_en
 	return ret;
 }
 EXPORT_SYMBOL(prepare_to_wait_event);
+
+/*
+ * Note! These two wait functions are entered with the
+ * wait-queue lock held (and interrupts off in the _irq
+ * case), so there is no race with testing the wakeup
+ * condition in the caller before they add the wait
+ * entry to the wake queue.
+ */
+int do_wait_intr(wait_queue_head_t *wq, wait_queue_entry_t *wait)
+{
+	if (likely(list_empty(&wait->entry)))
+		__add_wait_queue_entry_tail(wq, wait);
+
+	set_current_state(TASK_INTERRUPTIBLE);
+	if (signal_pending(current))
+		return -ERESTARTSYS;
+
+	spin_unlock(&wq->lock);
+	schedule();
+	spin_lock(&wq->lock);
+	return 0;
+}
+EXPORT_SYMBOL(do_wait_intr);
+
+int do_wait_intr_irq(wait_queue_head_t *wq, wait_queue_entry_t *wait)
+{
+	if (likely(list_empty(&wait->entry)))
+		__add_wait_queue_entry_tail(wq, wait);
+
+	set_current_state(TASK_INTERRUPTIBLE);
+	if (signal_pending(current))
+		return -ERESTARTSYS;
+
+	spin_unlock_irq(&wq->lock);
+	schedule();
+	spin_lock_irq(&wq->lock);
+	return 0;
+}
+EXPORT_SYMBOL(do_wait_intr_irq);
 
 /**
  * finish_wait - clean up after waiting in a queue
@@ -268,9 +307,9 @@ void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_en
 	 *    have _one_ other CPU that looks at or modifies
 	 *    the list).
 	 */
-	if (!list_empty_careful(&wq_entry->task_list)) {
+	if (!list_empty_careful(&wq_entry->entry)) {
 		spin_lock_irqsave(&wq_head->lock, flags);
-		list_del_init(&wq_entry->task_list);
+		list_del_init(&wq_entry->entry);
 		spin_unlock_irqrestore(&wq_head->lock, flags);
 	}
 }
@@ -281,7 +320,7 @@ int autoremove_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *
 	int ret = default_wake_function(wait, mode, sync, key);
 
 	if (ret)
-		list_del_init(&wait->task_list);
+		list_del_init(&wq_entry->entry);
 	return ret;
 }
 EXPORT_SYMBOL(autoremove_wake_function);

@@ -21,7 +21,7 @@ struct __wait_queue {
 	unsigned int		flags;
 	void			*private;
 	wait_queue_func_t	func;
-	struct list_head	task_list;
+	struct list_head	entry;
 };
 
 struct wait_bit_key {
@@ -38,7 +38,7 @@ struct wait_bit_queue {
 
 struct wait_queue_head {
 	spinlock_t		lock;
-	struct list_head	task_list;
+	struct list_head	head;
 };
 typedef struct wait_queue_head wait_queue_head_t;
 
@@ -48,17 +48,17 @@ struct task_struct;
  * Macros for declaration and initialisaton of the datatypes
  */
 
-#define __WAITQUEUE_INITIALIZER(name, tsk) {				\
-	.private	= tsk,						\
-	.func		= default_wake_function,			\
-	.task_list	= { NULL, NULL } }
+#define __WAITQUEUE_INITIALIZER(name, tsk) {					\
+	.private	= tsk,							\
+	.func		= default_wake_function,				\
+	.entry		= { NULL, NULL } }
 
 #define DECLARE_WAITQUEUE(name, tsk)					\
 	wait_queue_t name = __WAITQUEUE_INITIALIZER(name, tsk)
 
-#define __WAIT_QUEUE_HEAD_INITIALIZER(name) {				\
-	.lock		= __SPIN_LOCK_UNLOCKED(name.lock),		\
-	.task_list	= { &(name).task_list, &(name).task_list } }
+#define __WAIT_QUEUE_HEAD_INITIALIZER(name) {					\
+	.lock		= __SPIN_LOCK_UNLOCKED(name.lock),			\
+	.head		= { &(name).head, &(name).head } }
 
 #define DECLARE_WAIT_QUEUE_HEAD(name) \
 	struct wait_queue_head name = __WAIT_QUEUE_HEAD_INITIALIZER(name)
@@ -134,7 +134,7 @@ init_waitqueue_func_entry(wait_queue_t *q, wait_queue_func_t func)
  */
 static inline int waitqueue_active(struct wait_queue_head *wq_head)
 {
-	return !list_empty(&wq_head->task_list);
+	return !list_empty(&wq_head->head);
 }
 
 /**
@@ -164,7 +164,7 @@ extern void remove_wait_queue(struct wait_queue_head *wq_head, struct wait_queue
 
 static inline void __add_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-	list_add(&wq_entry->task_list, &wq_head->task_list);
+	list_add(&wq_entry->entry, &wq_head->head);
 }
 
 /*
@@ -179,7 +179,7 @@ __add_wait_queue_exclusive(struct wait_queue_head *wq_head, struct wait_queue_en
 
 static inline void __add_wait_queue_entry_tail(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-	list_add_tail(&wq_entry->task_list, &wq_head->task_list);
+	list_add_tail(&wq_entry->entry, &wq_head->head);
 }
 
 static inline void
@@ -192,7 +192,7 @@ __add_wait_queue_entry_tail_exclusive(struct wait_queue_head *wq_head, struct wa
 static inline void
 __remove_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-	list_del(&old->task_list);
+	list_del(&wq_entry->entry);
 }
 
 typedef int wait_bit_action_f(struct wait_bit_key *, int mode);
@@ -992,7 +992,7 @@ int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, i
 	struct wait_queue_entry name = {					\
 		.private	= current,					\
 		.func		= function,					\
-		.task_list	= LIST_HEAD_INIT((name).task_list),		\
+		.entry		= LIST_HEAD_INIT((name).entry),			\
 	}
 
 #define DEFINE_WAIT(name) DEFINE_WAIT_FUNC(name, autoremove_wake_function)
@@ -1001,7 +1001,7 @@ int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, i
 	do {									\
 		(wait)->private = current;					\
 		(wait)->func = autoremove_wake_function;			\
-		INIT_LIST_HEAD(&(wait)->task_list);				\
+		INIT_LIST_HEAD(&(wait)->entry);					\
 		(wait)->flags = 0;						\
 	} while (0)
 
