@@ -769,7 +769,25 @@ static inline unsigned int queued_to_index(unsigned int queued)
  * of IO. In particular, we'd like FIFO behaviour on handling existing
  * items on the hctx->dispatch list. Ignore that for now.
  */
-static void __blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx)
+static bool reorder_tags_to_front(struct list_head *list)
+{
+	struct request *rq, *tmp, *first = NULL;
+
+	list_for_each_entry_safe_reverse(rq, tmp, list, queuelist) {
+		if (rq == first)
+			break;
+		if (rq->tag != -1) {
+			list_move(&rq->queuelist, list);
+			if (!first)
+				first = rq;
+		}
+	}
+
+	return first != NULL;
+}
+
+static int blk_mq_dispatch_wake(wait_queue_entry_t *wait, unsigned mode, int flags,
+				void *key)
 {
 	struct request_queue *q = hctx->queue;
 	struct request *rq;

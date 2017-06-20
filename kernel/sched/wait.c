@@ -20,7 +20,7 @@ void __init_waitqueue_head(struct wait_queue_head *wq_head, const char *name, st
 
 EXPORT_SYMBOL(__init_waitqueue_head);
 
-void add_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
+void add_wait_queue(wait_queue_head_t *q, wait_queue_entry_t *wait)
 {
 	unsigned long flags;
 
@@ -31,18 +31,18 @@ void add_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq
 }
 EXPORT_SYMBOL(add_wait_queue);
 
-void add_wait_queue_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
+void add_wait_queue_exclusive(wait_queue_head_t *q, wait_queue_entry_t *wait)
 {
 	unsigned long flags;
 
-	wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
-	spin_lock_irqsave(&wq_head->lock, flags);
-	__add_wait_queue_entry_tail(wq_head, wq_entry);
-	spin_unlock_irqrestore(&wq_head->lock, flags);
+	wait->flags |= WQ_FLAG_EXCLUSIVE;
+	spin_lock_irqsave(&q->lock, flags);
+	__add_wait_queue_entry_tail(q, wait);
+	spin_unlock_irqrestore(&q->lock, flags);
 }
 EXPORT_SYMBOL(add_wait_queue_exclusive);
 
-void remove_wait_queue(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
+void remove_wait_queue(wait_queue_head_t *q, wait_queue_entry_t *wait)
 {
 	unsigned long flags;
 
@@ -65,7 +65,7 @@ EXPORT_SYMBOL(remove_wait_queue);
 static void __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
 			int nr_exclusive, int wake_flags, void *key)
 {
-	wait_queue_t *curr, *next;
+	wait_queue_entry_t *curr, *next;
 
 	list_for_each_entry_safe(curr, next, &wq_head->task_list, task_list) {
 		unsigned flags = curr->flags;
@@ -169,7 +169,7 @@ EXPORT_SYMBOL_GPL(__wake_up_sync);	/* For internal use only */
  * loads to move into the critical region).
  */
 void
-prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state)
+prepare_to_wait(wait_queue_head_t *q, wait_queue_entry_t *wait, int state)
 {
 	unsigned long flags;
 
@@ -183,20 +183,20 @@ prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_ent
 EXPORT_SYMBOL(prepare_to_wait);
 
 void
-prepare_to_wait_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state)
+prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_entry_t *wait, int state)
 {
 	unsigned long flags;
 
-	wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
-	spin_lock_irqsave(&wq_head->lock, flags);
-	if (list_empty(&wq_entry->task_list))
-		__add_wait_queue_entry_tail(wq_head, wq_entry);
+	wait->flags |= WQ_FLAG_EXCLUSIVE;
+	spin_lock_irqsave(&q->lock, flags);
+	if (list_empty(&wait->task_list))
+		__add_wait_queue_entry_tail(q, wait);
 	set_current_state(state);
 	spin_unlock_irqrestore(&wq_head->lock, flags);
 }
 EXPORT_SYMBOL(prepare_to_wait_exclusive);
 
-void init_wait_entry(wait_queue_t *wait, int flags)
+void init_wait_entry(wait_queue_entry_t *wait, int flags)
 {
 	wq_entry->flags = flags;
 	wq_entry->private = current;
@@ -205,7 +205,7 @@ void init_wait_entry(wait_queue_t *wait, int flags)
 }
 EXPORT_SYMBOL(init_wait_entry);
 
-long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state)
+long prepare_to_wait_event(wait_queue_head_t *q, wait_queue_entry_t *wait, int state)
 {
 	unsigned long flags;
 	long ret = 0;
@@ -227,9 +227,9 @@ long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_en
 		list_del_init(&wq_entry->entry);
 		ret = -ERESTARTSYS;
 	} else {
-		if (list_empty(&wq_entry->entry)) {
-			if (wq_entry->flags & WQ_FLAG_EXCLUSIVE)
-				__add_wait_queue_entry_tail(wq_head, wq_entry);
+		if (list_empty(&wait->task_list)) {
+			if (wait->flags & WQ_FLAG_EXCLUSIVE)
+				__add_wait_queue_entry_tail(q, wait);
 			else
 				__add_wait_queue(wq_head, wq_entry);
 		}
@@ -250,7 +250,7 @@ EXPORT_SYMBOL(prepare_to_wait_event);
  */
 int do_wait_intr(wait_queue_head_t *wq, wait_queue_entry_t *wait)
 {
-	if (likely(list_empty(&wait->entry)))
+	if (likely(list_empty(&wait->task_list)))
 		__add_wait_queue_entry_tail(wq, wait);
 
 	set_current_state(TASK_INTERRUPTIBLE);
@@ -266,7 +266,7 @@ EXPORT_SYMBOL(do_wait_intr);
 
 int do_wait_intr_irq(wait_queue_head_t *wq, wait_queue_entry_t *wait)
 {
-	if (likely(list_empty(&wait->entry)))
+	if (likely(list_empty(&wait->task_list)))
 		__add_wait_queue_entry_tail(wq, wait);
 
 	set_current_state(TASK_INTERRUPTIBLE);
@@ -289,7 +289,7 @@ EXPORT_SYMBOL(do_wait_intr_irq);
  * the wait descriptor from the given waitqueue if still
  * queued.
  */
-void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
+void finish_wait(wait_queue_head_t *q, wait_queue_entry_t *wait)
 {
 	unsigned long flags;
 
@@ -315,7 +315,7 @@ void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_en
 }
 EXPORT_SYMBOL(finish_wait);
 
-int autoremove_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key)
+int autoremove_wake_function(wait_queue_entry_t *wait, unsigned mode, int sync, void *key)
 {
 	int ret = default_wake_function(wait, mode, sync, key);
 
@@ -350,7 +350,7 @@ static inline bool is_kthread_should_stop(void)
  * remove_wait_queue(&wq_head, &wait);
  *
  */
-long wait_woken(wait_queue_t *wait, unsigned mode, long timeout)
+long wait_woken(wait_queue_entry_t *wait, unsigned mode, long timeout)
 {
 	set_current_state(mode); /* A */
 	/*
@@ -374,7 +374,7 @@ long wait_woken(wait_queue_t *wait, unsigned mode, long timeout)
 }
 EXPORT_SYMBOL(wait_woken);
 
-int woken_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key)
+int woken_wake_function(wait_queue_entry_t *wait, unsigned mode, int sync, void *key)
 {
 	/*
 	 * Although this function is called under waitqueue lock, LOCK
@@ -390,7 +390,7 @@ int woken_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key)
 }
 EXPORT_SYMBOL(woken_wake_function);
 
-int wake_bit_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *arg)
+int wake_bit_function(wait_queue_entry_t *wait, unsigned mode, int sync, void *arg)
 {
 	struct wait_bit_key *key = arg;
 	struct wait_bit_queue *wait_bit
@@ -533,7 +533,7 @@ static inline wait_queue_head_t *atomic_t_waitqueue(atomic_t *p)
 	return bit_waitqueue(p, 0);
 }
 
-static int wake_atomic_t_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync,
+static int wake_atomic_t_function(wait_queue_entry_t *wait, unsigned mode, int sync,
 				  void *arg)
 {
 	struct wait_bit_key *key = arg;
