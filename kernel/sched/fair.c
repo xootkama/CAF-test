@@ -5557,7 +5557,30 @@ static unsigned long cpu_avg_load_per_task(int cpu)
  * Given a runqueue weight distribution (rw_i) we can compute a shares
  * distribution (s_i) using:
  *
- *   s_i = rw_i / \Sum rw_j						(1)
+ * Waker/wakee being client/server, worker/dispatcher, interrupt source or
+ * whatever is irrelevant, spread criteria is apparent partner count exceeds
+ * socket size.
+ */
+static int wake_wide(struct task_struct *p, int sibling_count_hint)
+{
+	unsigned int master = current->wakee_flips;
+	unsigned int slave = p->wakee_flips;
+	int llc_size = this_cpu_read(sd_llc_size);
+
+	if (sibling_count_hint >= llc_size)
+		return 1;
+
+	if (master < slave)
+		swap(master, slave);
+	if (slave < llc_size || master < slave * llc_size)
+		return 0;
+	return 1;
+}
+
+/*
+ * The purpose of wake_affine() is to quickly determine on which CPU we can run
+ * soonest. For the purpose of speed we only consider the waking and previous
+ * CPU.
  *
  * Suppose we have 4 CPUs and our @tg is a direct child of the root group and
  * has 7 equal weight tasks, distributed as below (rw_i), with the resulting
@@ -7806,7 +7829,8 @@ out:
  * preempt must be disabled.
  */
 static int
-select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_flags)
+select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_flags,
+		    int sibling_count_hint)
 {
 	struct sched_domain *tmp, *affine_sd = NULL, *sd = NULL;
 	int cpu = smp_processor_id();
@@ -7820,11 +7844,16 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 			cpumask_test_cpu(cpu, tsk_cpus_allowed(p)));
 	}
 
-	if (energy_aware()) {
-		rcu_read_lock();
-		new_cpu = select_energy_cpu_brute(p, prev_cpu, sync);
-		rcu_read_unlock();
-		return new_cpu;
+		if (static_branch_unlikely(&sched_energy_present)) {
+			new_cpu = find_energy_efficient_cpu(p, prev_cpu, sync);
+			if (new_cpu >= 0)
+				return new_cpu;
+			new_cpu = prev_cpu;
+		}
+
+		want_affine = !wake_wide(p, sibling_count_hint) &&
+			      !wake_cap(p, cpu, prev_cpu) &&
+			      cpumask_test_cpu(cpu, &p->cpus_allowed);
 	}
 
 	rcu_read_lock();

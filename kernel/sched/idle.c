@@ -300,5 +300,75 @@ void cpu_startup_entry(enum cpuhp_state state)
 #endif
 	arch_cpu_idle_prepare();
 	cpuhp_online_idle(state);
-	cpu_idle_loop();
+	while (1)
+		do_idle();
+}
+
+/*
+ * idle-task scheduling class.
+ */
+
+#ifdef CONFIG_SMP
+static int
+select_task_rq_idle(struct task_struct *p, int cpu, int sd_flag, int flags,
+		    int sibling_count_hint)
+{
+	return task_cpu(p); /* IDLE tasks as never migrated */
+}
+#endif
+
+/*
+ * Idle tasks are unconditionally rescheduled:
+ */
+static void check_preempt_curr_idle(struct rq *rq, struct task_struct *p, int flags)
+{
+	resched_curr(rq);
+}
+
+static struct task_struct *
+pick_next_task_idle(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+	put_prev_task(rq, prev);
+	update_idle_core(rq);
+	schedstat_inc(rq->sched_goidle);
+
+	return rq->idle;
+}
+
+/*
+ * It is not legal to sleep in the idle task - print a warning
+ * message if some code attempts to do it:
+ */
+static void
+dequeue_task_idle(struct rq *rq, struct task_struct *p, int flags)
+{
+	raw_spin_unlock_irq(&rq->lock);
+	printk(KERN_ERR "bad: scheduling from the idle thread!\n");
+	dump_stack();
+	raw_spin_lock_irq(&rq->lock);
+}
+
+static void put_prev_task_idle(struct rq *rq, struct task_struct *prev)
+{
+}
+
+/*
+ * scheduler tick hitting a task of our scheduling class.
+ *
+ * NOTE: This function can be called remotely by the tick offload that
+ * goes along full dynticks. Therefore no local assumption can be made
+ * and everything must be accessed through the @rq and @curr passed in
+ * parameters.
+ */
+static void task_tick_idle(struct rq *rq, struct task_struct *curr, int queued)
+{
+}
+
+static void set_curr_task_idle(struct rq *rq)
+{
+}
+
+static void switched_to_idle(struct rq *rq, struct task_struct *p)
+{
+	BUG();
 }
