@@ -2328,3 +2328,5 @@ config ASN1
 
 source "kernel/Kconfig.locks"
 
+config ARCH_HAS_SYNC_CORE_BEFORE_USERMODE
+	bool
