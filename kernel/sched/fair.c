@@ -6671,19 +6671,19 @@ static int wake_wide(struct task_struct *p)
  *			  for the overloaded case.
  */
 
-static bool
+static int
 wake_affine_idle(int this_cpu, int prev_cpu, int sync)
 {
 	if (idle_cpu(this_cpu))
-		return true;
+		return this_cpu;
 
 	if (sync && cpu_rq(this_cpu)->nr_running == 1)
-		return true;
+		return this_cpu;
 
-	return false;
+	return nr_cpumask_bits;
 }
 
-static bool
+static int
 wake_affine_weight(struct sched_domain *sd, struct task_struct *p,
 		   int this_cpu, int prev_cpu, int sync)
 {
@@ -6697,7 +6697,7 @@ wake_affine_weight(struct sched_domain *sd, struct task_struct *p,
 		unsigned long current_load = task_h_load(current);
 
 		if (current_load > this_eff_load)
-			return true;
+			return this_cpu;
 
 		this_eff_load -= current_load;
 	}
@@ -6714,118 +6714,28 @@ wake_affine_weight(struct sched_domain *sd, struct task_struct *p,
 		prev_eff_load *= 100 + (sd->imbalance_pct - 100) / 2;
 	prev_eff_load *= capacity_of(this_cpu);
 
-	return this_eff_load <= prev_eff_load;
+	return this_eff_load <= prev_eff_load ? this_cpu : nr_cpumask_bits;
 }
 
 static int wake_affine(struct sched_domain *sd, struct task_struct *p,
 		       int prev_cpu, int sync)
 {
-	s64 this_load, load;
-	s64 this_eff_load, prev_eff_load;
-	int idx, this_cpu;
-	struct task_group *tg;
-	unsigned long weight;
-	int balanced;
+	int this_cpu = smp_processor_id();
+	int target = nr_cpumask_bits;
 
 	if (sched_feat(WA_IDLE))
-		affine = wake_affine_idle(this_cpu, prev_cpu, sync);
+		target = wake_affine_idle(this_cpu, prev_cpu, sync);
 
-	/*
-	 * If sync wakeup then subtract the (maximum possible)
-	 * effect of the currently running task from the load
-	 * of the current CPU:
-	 */
-	if (sync) {
-		tg = task_group(current);
-		weight = current->se.avg.load_avg;
-
-		this_load += effective_load(tg, this_cpu, -weight, -weight);
-		load += effective_load(tg, prev_cpu, 0, -weight);
-	}
-
-	tg = task_group(p);
-	weight = p->se.avg.load_avg;
-
-	/*
-	 * In low-load situations, where prev_cpu is idle and this_cpu is idle
-	 * due to the sync cause above having dropped this_load to 0, we'll
-	 * always have an imbalance, but there's really nothing you can do
-	 * about that, so that's good too.
-	 *
-	 * Otherwise check if either cpus are near enough in load to allow this
-	 * task to be woken on this_cpu.
-	 */
-	this_eff_load = 100;
-	this_eff_load *= capacity_of(prev_cpu);
-
-	prev_eff_load = 100 + (sd->imbalance_pct - 100) / 2;
-	prev_eff_load *= capacity_of(this_cpu);
-
-	if (this_load > 0) {
-		this_eff_load *= this_load +
-			effective_load(tg, this_cpu, weight, weight);
-
-		prev_eff_load *= load + effective_load(tg, prev_cpu, 0, weight);
-	}
-
-	balanced = this_eff_load <= prev_eff_load;
+	if (sched_feat(WA_WEIGHT) && target == nr_cpumask_bits)
+		target = wake_affine_weight(sd, p, this_cpu, prev_cpu, sync);
 
 	schedstat_inc(p->se.statistics.nr_wakeups_affine_attempts);
-
-	if (!balanced)
-		return 0;
+	if (target == nr_cpumask_bits)
+		return prev_cpu;
 
 	schedstat_inc(sd->ttwu_move_affine);
 	schedstat_inc(p->se.statistics.nr_wakeups_affine);
-
-	return 1;
-}
-
-static inline unsigned long boosted_task_util(struct task_struct *p);
-
-static inline bool __task_fits(struct task_struct *p, int cpu, int util)
-{
-	unsigned int margin;
-
-	util += boosted_task_util(p);
-
-	if (capacity_orig_of(task_cpu(p)) > capacity_orig_of(cpu))
-		margin = sysctl_sched_capacity_margin_down;
-	else
-		margin = sysctl_sched_capacity_margin;
-
-	return (capacity_orig_of(cpu) * 1024) > (util * margin);
-}
-
-static inline bool task_fits_max(struct task_struct *p, int cpu)
-{
-	unsigned long capacity = capacity_orig_of(cpu);
-	unsigned long max_capacity = cpu_rq(cpu)->rd->max_cpu_capacity.val;
-
-	if (capacity == max_capacity)
-		return true;
-
-	if (task_boost_policy(p) == SCHED_BOOST_ON_BIG)
-		return false;
-
-	return __task_fits(p, cpu, 0);
-}
-
-static inline bool cpu_check_overutil_condition(int cpu,
-						unsigned long util)
-{
-	return (capacity_orig_of(cpu) * 1024) < (util * capacity_margin);
-}
-
-bool __cpu_overutilized(int cpu, int delta)
-{
-	return (capacity_orig_of(cpu) * 1024) <
-			((cpu_util(cpu) + delta) * capacity_margin);
-}
-
-bool cpu_overutilized(int cpu)
-{
-	return __cpu_overutilized(cpu, 0);
+	return target;
 }
 
 #ifdef CONFIG_SCHED_TUNE
@@ -8276,8 +8186,10 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 
 	if (affine_sd) {
 		sd = NULL; /* Prefer wake_affine over balance flags */
-		if (cpu != prev_cpu && wake_affine(affine_sd, p, prev_cpu, sync))
-			new_cpu = cpu;
+		if (cpu == prev_cpu)
+			goto pick_cpu;
+
+		new_cpu = wake_affine(affine_sd, p, prev_cpu, sync);
 	}
 
 	if (sd && !(sd_flag & SD_BALANCE_FORK)) {
