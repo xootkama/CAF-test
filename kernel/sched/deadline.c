@@ -1180,6 +1180,37 @@ out:
 	return cpu;
 }
 
+static void migrate_task_rq_dl(struct task_struct *p, int new_cpu __maybe_unused)
+{
+	struct rq *rq;
+
+	if (p->state != TASK_WAKING)
+		return;
+
+	rq = task_rq(p);
+	/*
+	 * Since p->state == TASK_WAKING, set_task_cpu() has been called
+	 * from try_to_wake_up(). Hence, p->pi_lock is locked, but
+	 * rq->lock is not... So, lock it
+	 */
+	raw_spin_lock(&rq->lock);
+	if (p->dl.dl_non_contending) {
+		sub_running_bw(&p->dl, &rq->dl);
+		p->dl.dl_non_contending = 0;
+		/*
+		 * If the timer handler is currently running and the
+		 * timer cannot be cancelled, inactive_task_timer()
+		 * will see that dl_not_contending is not set, and
+		 * will not touch the rq's active utilization,
+		 * so we are still safe.
+		 */
+		if (hrtimer_try_to_cancel(&p->dl.inactive_timer) == 1)
+			put_task_struct(p);
+	}
+	sub_rq_bw(&p->dl, &rq->dl);
+	raw_spin_unlock(&rq->lock);
+}
+
 static void check_preempt_equal_dl(struct rq *rq, struct task_struct *p)
 {
 	/*

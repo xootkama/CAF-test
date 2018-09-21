@@ -6434,8 +6434,12 @@ schedtune_cpu_margin(unsigned long util, int cpu)
 	return schedtune_margin(util, boost);
 }
 
-static inline long
-schedtune_task_margin(struct task_struct *p)
+/*
+ * Called immediately before a task is migrated to a new CPU; task_cpu(p) and
+ * cfs_rq_of(p) references at time of call are still valid and identify the
+ * previous CPU. The caller guarantees p->pi_lock or task_rq(p)->lock is held.
+ */
+static void migrate_task_rq_fair(struct task_struct *p, int new_cpu __maybe_unused)
 {
 	int boost = schedtune_task_boost(p);
 	unsigned long util;
