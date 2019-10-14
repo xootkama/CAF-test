@@ -7640,7 +7640,12 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 	struct cpumask *rtg_target = find_rtg_target(p);
 	struct find_best_target_env fbt_env;
 	u64 start_t = 0;
-	int fastpath = 0;
+	int next_cpu = -1, backup_cpu = -1;
+	int boosted = (schedtune_task_boost(p) > 0 || per_task_boost(p) > 0);
+	bool about_to_idle = (cpu_rq(cpu)->nr_running < 2);
+
+	fbt_env.fastpath = 0;
+	fbt_env.need_idle = 0;
 
 	if (trace_sched_task_util_enabled())
 		start_t = sched_clock();
@@ -7670,6 +7675,7 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 	if (prefer_idle || fbt_env.need_idle)
 		sync = 0;
 
+<<<<<<< HEAD
 	if (sysctl_sched_sync_hint_enable && sync) {
 		int cpu = smp_processor_id();
 
@@ -7685,6 +7691,12 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 	if (bias_to_prev_cpu(p, rtg_target)) {
 		target_cpu = prev_cpu;
 		fastpath = PREV_CPU_BIAS;
+=======
+	if (sysctl_sched_sync_hint_enable && sync && about_to_idle &&
+				bias_to_waker_cpu(p, cpu, rtg_target)) {
+		target_cpu = cpu;
+		fbt_env.fastpath = SYNC_WAKEUP;
+>>>>>>> f9667df77a01 (sched/fair: honor sync only if CPU is about to goto idle)
 		goto out;
 	}
 
