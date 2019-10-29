@@ -1894,9 +1894,14 @@ extern unsigned int walt_disabled;
 static inline unsigned long task_util(struct task_struct *p)
 {
 #ifdef CONFIG_SCHED_WALT
+<<<<<<< HEAD
 	if (!walt_disabled && sysctl_sched_use_walt_task_util)
 		return p->ravg.demand /
 		       (sched_ravg_window >> SCHED_CAPACITY_SHIFT);
+=======
+	if (unlikely(!walt_disabled && sysctl_sched_use_walt_task_util))
+		return p->ravg.demand_scaled;
+>>>>>>> 11ddbb2db586 (sched: optimize for PELT)
 #endif
 	return p->se.avg.util_avg;
 }
@@ -1933,10 +1938,19 @@ static inline unsigned long __cpu_util(int cpu, int delta)
 	unsigned long capacity = capacity_orig_of(cpu);
 
 #ifdef CONFIG_SCHED_WALT
+<<<<<<< HEAD
 	if (!walt_disabled && sysctl_sched_use_walt_cpu_util) {
 		util = cpu_rq(cpu)->walt_stats.cumulative_runnable_avg;
 		util = div64_u64(util,
 				 sched_ravg_window >> SCHED_CAPACITY_SHIFT);
+=======
+	if (unlikely(!walt_disabled && sysctl_sched_use_walt_cpu_util)) {
+		u64 walt_cpu_util =
+			cpu_rq(cpu)->walt_stats.cumulative_runnable_avg_scaled;
+
+		return min_t(unsigned long, walt_cpu_util,
+				capacity_orig_of(cpu));
+>>>>>>> 11ddbb2db586 (sched: optimize for PELT)
 	}
 #endif
 	delta += util;
@@ -1964,11 +1978,8 @@ static inline unsigned long cpu_util_cum(int cpu, int delta)
 	unsigned long capacity = capacity_orig_of(cpu);
 
 #ifdef CONFIG_SCHED_WALT
-	if (!walt_disabled && sysctl_sched_use_walt_cpu_util) {
-		util = cpu_rq(cpu)->cum_window_demand;
-		util = div64_u64(util,
-				 sched_ravg_window >> SCHED_CAPACITY_SHIFT);
-	}
+	if (unlikely(!walt_disabled && sysctl_sched_use_walt_cpu_util))
+		util = cpu_rq(cpu)->cum_window_demand_scaled;
 #endif
 	delta += util;
 	if (delta < 0)
@@ -2005,8 +2016,8 @@ cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 	unsigned long capacity = capacity_orig_of(cpu);
 	int boost;
 
-	if (walt_disabled || !sysctl_sched_use_walt_cpu_util)
-		return cpu_util_freq_pelt(cpu);
+	if (likely(walt_disabled || !sysctl_sched_use_walt_cpu_util))
+		return cpu_util(cpu);
 
 	boost = per_cpu(sched_load_boost, cpu);
 	util_unboosted = util = freq_policy_load(rq);
