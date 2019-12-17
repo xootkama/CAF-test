@@ -1969,7 +1969,6 @@ int gsi_write_channel_scratch(unsigned long chan_hdl,
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_write_channel_scratch);
 
 int gsi_read_channel_scratch(unsigned long chan_hdl,
 	union __packed gsi_channel_scratch * ch_scratch)
@@ -2037,7 +2036,104 @@ int gsi_query_channel_db_addr(unsigned long chan_hdl,
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_query_channel_db_addr);
+
+int gsi_read_wdi3_channel_scratch2_reg(unsigned long chan_hdl,
+		union __packed gsi_wdi3_channel_scratch2_reg * val)
+{
+	struct gsi_chan_ctx *ctx;
+
+	if (!gsi_ctx) {
+		pr_err("%s:%d gsi context not allocated\n", __func__, __LINE__);
+		return -GSI_STATUS_NODEV;
+	}
+
+	if (chan_hdl >= gsi_ctx->max_ch) {
+		GSIERR("bad params chan_hdl=%lu\n", chan_hdl);
+		return -GSI_STATUS_INVALID_PARAMS;
+	}
+
+	if (gsi_ctx->chan[chan_hdl].state != GSI_CHAN_STATE_ALLOCATED &&
+		gsi_ctx->chan[chan_hdl].state != GSI_CHAN_STATE_STARTED &&
+		gsi_ctx->chan[chan_hdl].state != GSI_CHAN_STATE_STOPPED) {
+		GSIERR("bad state %d\n",
+				gsi_ctx->chan[chan_hdl].state);
+		return -GSI_STATUS_UNSUPPORTED_OP;
+	}
+
+	ctx = &gsi_ctx->chan[chan_hdl];
+
+	mutex_lock(&ctx->mlock);
+	__gsi_read_wdi3_channel_scratch2_reg(chan_hdl, val);
+	mutex_unlock(&ctx->mlock);
+
+	return GSI_STATUS_SUCCESS;
+}
+EXPORT_SYMBOL(gsi_read_wdi3_channel_scratch2_reg);
+
+
+int gsi_update_mhi_channel_scratch(unsigned long chan_hdl,
+		struct gsi_mhi_channel_scratch mscr)
+{
+	struct gsi_chan_ctx *ctx;
+
+	if (!gsi_ctx) {
+		pr_err("%s:%d gsi context not allocated\n", __func__, __LINE__);
+		return -GSI_STATUS_NODEV;
+	}
+
+	if (chan_hdl >= gsi_ctx->max_ch) {
+		GSIERR("bad params chan_hdl=%lu\n", chan_hdl);
+		return -GSI_STATUS_INVALID_PARAMS;
+	}
+
+	if (gsi_ctx->chan[chan_hdl].state != GSI_CHAN_STATE_ALLOCATED &&
+		gsi_ctx->chan[chan_hdl].state != GSI_CHAN_STATE_STOPPED) {
+		GSIERR("bad state %d\n",
+				gsi_ctx->chan[chan_hdl].state);
+		return -GSI_STATUS_UNSUPPORTED_OP;
+	}
+
+	ctx = &gsi_ctx->chan[chan_hdl];
+
+	mutex_lock(&ctx->mlock);
+	ctx->scratch = __gsi_update_mhi_channel_scratch(chan_hdl, mscr);
+	mutex_unlock(&ctx->mlock);
+
+	return GSI_STATUS_SUCCESS;
+}
+
+int gsi_query_channel_db_addr(unsigned long chan_hdl,
+		uint32_t *db_addr_wp_lsb, uint32_t *db_addr_wp_msb)
+{
+	if (!gsi_ctx) {
+		pr_err("%s:%d gsi context not allocated\n", __func__, __LINE__);
+		return -GSI_STATUS_NODEV;
+	}
+
+	if (!db_addr_wp_msb || !db_addr_wp_lsb) {
+		GSIERR("bad params msb=%pK lsb=%pK\n", db_addr_wp_msb,
+				db_addr_wp_lsb);
+		return -GSI_STATUS_INVALID_PARAMS;
+	}
+
+	if (chan_hdl >= gsi_ctx->max_ch) {
+		GSIERR("bad params chan_hdl=%lu\n", chan_hdl);
+		return -GSI_STATUS_INVALID_PARAMS;
+	}
+
+	if (gsi_ctx->chan[chan_hdl].state == GSI_CHAN_STATE_NOT_ALLOCATED) {
+		GSIERR("bad state %d\n",
+				gsi_ctx->chan[chan_hdl].state);
+		return -GSI_STATUS_UNSUPPORTED_OP;
+	}
+
+	*db_addr_wp_lsb = gsi_ctx->per.phys_addr +
+		GSI_EE_n_GSI_CH_k_DOORBELL_0_OFFS(chan_hdl, gsi_ctx->per.ee);
+	*db_addr_wp_msb = gsi_ctx->per.phys_addr +
+		GSI_EE_n_GSI_CH_k_DOORBELL_1_OFFS(chan_hdl, gsi_ctx->per.ee);
+
+	return GSI_STATUS_SUCCESS;
+}
 
 int gsi_start_channel(unsigned long chan_hdl)
 {
@@ -2090,7 +2186,6 @@ int gsi_start_channel(unsigned long chan_hdl)
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_start_channel);
 
 int gsi_stop_channel(unsigned long chan_hdl)
 {
@@ -2174,7 +2269,6 @@ free_lock:
 	mutex_unlock(&gsi_ctx->mlock);
 	return res;
 }
-EXPORT_SYMBOL(gsi_stop_channel);
 
 int gsi_stop_db_channel(unsigned long chan_hdl)
 {
@@ -2243,7 +2337,6 @@ free_lock:
 	mutex_unlock(&gsi_ctx->mlock);
 	return res;
 }
-EXPORT_SYMBOL(gsi_stop_db_channel);
 
 int gsi_reset_channel(unsigned long chan_hdl)
 {
@@ -2327,7 +2420,6 @@ revrfy_chnlstate:
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_reset_channel);
 
 int gsi_dealloc_channel(unsigned long chan_hdl)
 {
@@ -2390,7 +2482,6 @@ int gsi_dealloc_channel(unsigned long chan_hdl)
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_dealloc_channel);
 
 void gsi_update_ch_dp_stats(struct gsi_chan_ctx *ctx, uint16_t used)
 {
@@ -2512,7 +2603,6 @@ int gsi_query_channel_info(unsigned long chan_hdl,
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_query_channel_info);
 
 int gsi_is_channel_empty(unsigned long chan_hdl, bool *is_empty)
 {
@@ -2571,7 +2661,6 @@ int gsi_is_channel_empty(unsigned long chan_hdl, bool *is_empty)
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_is_channel_empty);
 
 int gsi_queue_xfer(unsigned long chan_hdl, uint16_t num_xfers,
 		struct gsi_xfer_elem *xfer, bool ring_db)
@@ -2669,7 +2758,6 @@ int gsi_queue_xfer(unsigned long chan_hdl, uint16_t num_xfers,
 
 	return GSI_STATUS_SUCCESS;
 }
-EXPORT_SYMBOL(gsi_queue_xfer);
 
 int gsi_start_xfer(unsigned long chan_hdl)
 {
