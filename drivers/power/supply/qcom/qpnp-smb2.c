@@ -2103,6 +2103,8 @@ static enum power_supply_property smb2_batt_props[] = {
         POWER_SUPPLY_PROP_VOOCCHG_ING,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
 #ifdef CONFIG_OPPO_CHECK_CHARGERID_VOLT
         POWER_SUPPLY_PROP_CHARGERID_VOLT,
@@ -2258,13 +2260,15 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 		val->intval = 0;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+	case POWER_SUPPLY_PROP_CHARGE_FULL:
+	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
 #ifndef VENDOR_EDIT
 /*zhijie li@BSP.CHG.Basic 2019/04/12 lzj delete for charger*/	
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 	case POWER_SUPPLY_PROP_TEMP:
-#endif
+	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
 		rc = smblib_get_prop_from_bms(chg, psp, val);
 		break;
 		
