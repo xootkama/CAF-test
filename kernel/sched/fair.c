@@ -3610,54 +3610,61 @@ static inline unsigned long cfs_rq_load_avg(struct cfs_rq *cfs_rq)
 	return cfs_rq->avg.load_avg;
 }
 
-static int idle_balance(struct rq *this_rq, struct rq_flags *rf);
+static int idle_balance(struct rq *this_rq);
 
-static inline bool task_fits_capacity(struct task_struct *p, long capacity,
-								int cpu);
+#else /* CONFIG_SMP */
 
-static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
+static inline int
+update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq, bool update_freq)
 {
-	if (!static_branch_unlikely(&sched_asym_cpucapacity))
-		return;
-
-	if (!p) {
-		rq->misfit_task_load = 0;
-		return;
-	}
-
-	if (task_fits_max(p, cpu_of(rq))) {
-		rq->misfit_task_load = 0;
-		return;
-	}
-
-	rq->misfit_task_load = task_h_load(p);
+	return 0;
 }
 
-static inline unsigned long _task_util_est(struct task_struct *p)
-{
-	struct util_est ue = READ_ONCE(p->se.avg.util_est);
+#define UPDATE_TG	0x0
+#define SKIP_AGE_LOAD	0x0
 
-	return max(ue.ewma, ue.enqueued);
+static inline void update_load_avg(struct sched_entity *se, int not_used1)
+{
+	cpufreq_update_util(rq_of(cfs_rq_of(se)), 0);
 }
 
-static inline unsigned long task_util_est(struct task_struct *p)
+static inline void
+enqueue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+static inline void
+dequeue_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+static inline void remove_entity_load_avg(struct sched_entity *se) {}
+
+static inline void
+attach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+static inline void
+detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se) {}
+
+static inline int idle_balance(struct rq *rq)
 {
-#ifdef CONFIG_SCHED_WALT
-	if (unlikely(!walt_disabled && sysctl_sched_use_walt_task_util))
-		return p->ravg.demand_scaled;
+	return 0;
+}
+
 #endif
-	return max(task_util(p), _task_util_est(p));
+
+static void check_spread(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+#ifdef CONFIG_SCHED_DEBUG
+	s64 d = se->vruntime - cfs_rq->min_vruntime;
+
+	if (d < 0)
+		d = -d;
+
+	if (d > 3*sysctl_sched_latency)
+		schedstat_inc(cfs_rq->nr_spread_over);
+#endif
 }
 
-static inline void util_est_enqueue(struct cfs_rq *cfs_rq,
-				    struct task_struct *p)
+static void
+place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 {
-	unsigned int enqueued;
+	u64 vruntime = cfs_rq->min_vruntime;
 
-	if (!sched_feat(UTIL_EST))
-		return;
-
-	/* Update root cfs_rq's estimated utilization */
+        /* Update root cfs_rq's estimated utilization */
 	enqueued  = cfs_rq->avg.util_est.enqueued;
 	enqueued += (_task_util_est(p) | UTIL_AVG_UNCHANGED);
 	WRITE_ONCE(cfs_rq->avg.util_est.enqueued, enqueued);
