@@ -1894,11 +1894,13 @@ extern unsigned int walt_disabled;
 static inline unsigned long task_util(struct task_struct *p)
 {
 #ifdef CONFIG_SCHED_WALT
-	if (unlikely(!walt_disabled && sysctl_sched_use_walt_task_util))
-		return p->ravg.demand_scaled;
+	if (!walt_disabled && sysctl_sched_use_walt_task_util)
+		return p->ravg.demand /
+		       (sched_ravg_window >> SCHED_CAPACITY_SHIFT);
 #endif
 	return p->se.avg.util_avg;
 }
+
 
 /*
  * cpu_util returns the amount of capacity of a CPU that is used by CFS
@@ -1932,12 +1934,10 @@ static inline unsigned long __cpu_util(int cpu, int delta)
 	unsigned long capacity = capacity_orig_of(cpu);
 
 #ifdef CONFIG_SCHED_WALT
-	if (unlikely(!walt_disabled && sysctl_sched_use_walt_cpu_util)) {
-		u64 walt_cpu_util =
-			cpu_rq(cpu)->walt_stats.cumulative_runnable_avg_scaled;
-
-		return min_t(unsigned long, walt_cpu_util,
-				capacity_orig_of(cpu));
+	if (!walt_disabled && sysctl_sched_use_walt_cpu_util) {
+		util = cpu_rq(cpu)->walt_stats.cumulative_runnable_avg;
+		util = div64_u64(util,
+				 sched_ravg_window >> SCHED_CAPACITY_SHIFT);
 	}
 #endif
 	delta += util;
@@ -1965,8 +1965,11 @@ static inline unsigned long cpu_util_cum(int cpu, int delta)
 	unsigned long capacity = capacity_orig_of(cpu);
 
 #ifdef CONFIG_SCHED_WALT
-	if (unlikely(!walt_disabled && sysctl_sched_use_walt_cpu_util))
-		util = cpu_rq(cpu)->cum_window_demand_scaled;
+	if (!walt_disabled && sysctl_sched_use_walt_cpu_util) {
+		util = cpu_rq(cpu)->cum_window_demand;
+		util = div64_u64(util,
+				 sched_ravg_window >> SCHED_CAPACITY_SHIFT);
+	}
 #endif
 	delta += util;
 	if (delta < 0)
