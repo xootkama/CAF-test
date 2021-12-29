@@ -5611,40 +5611,31 @@ unsigned long capacity_min_of(int cpu)
 struct energy_env {
 	/* Utilization to move */
 	struct task_struct	*p;
-	int			util_delta;
+	unsigned long		util_delta;
+	unsigned long		util_delta_boosted;
 
 	/* Mask of CPUs candidates to evaluate */
 	cpumask_t		cpus_mask;
 
 	/* CPU candidates to evaluate */
-	struct {
+	struct eenv_cpu *cpu;
+	int eenv_cpu_count;
 
-		/* CPU ID, must be in cpus_mask */
-		int	cpu_id;
-
-		/*
-		 * Index (into sched_group_energy::cap_states) of the OPP the
-		 * CPU needs to run at if the task is placed on it.
-		 * This includes the both active and blocked load, due to
-		 * other tasks on this CPU,  as well as the task's own
-		 * utilization.
-		 */
-		int	cap_idx;
-		int	cap;
-
-		/* Estimated system energy */
-		unsigned int energy;
-
-		/* Estimated energy variation wrt EAS_CPU_PRV */
-		int	nrg_delta;
-
-	} cpu[EAS_CPU_CNT];
-
+#ifdef DEBUG_EENV_DECISIONS
+	/* pointer to the memory block reserved
+	 * for debug on this CPU - there will be
+	 * sizeof(struct _eenv_debug) *
+	 *  (EAS_CPU_CNT * EAS_EENV_DEBUG_LEVELS)
+	 * bytes allocated here.
+	 */
+	struct _eenv_debug *debug;
+#endif
 	/*
 	 * Index (into energy_env::cpu) of the morst energy efficient CPU for
 	 * the specified energy_env::task
 	 */
-	int			next_idx;
+	int	next_idx;
+	int	max_cpu_count;
 
 	/* Support data */
 	struct sched_group	*sg_top;
@@ -5781,41 +5772,6 @@ struct eenv_cpu {
 	struct _eenv_debug *debug;
 	int debug_idx;
 #endif /* DEBUG_EENV_DECISIONS */
-};
-
-struct energy_env {
-	/* Utilization to move */
-	struct task_struct	*p;
-	unsigned long		util_delta;
-	unsigned long		util_delta_boosted;
-
-	/* Mask of CPUs candidates to evaluate */
-	cpumask_t		cpus_mask;
-
-	/* CPU candidates to evaluate */
-	struct eenv_cpu *cpu;
-	int eenv_cpu_count;
-
-#ifdef DEBUG_EENV_DECISIONS
-	/* pointer to the memory block reserved
-	 * for debug on this CPU - there will be
-	 * sizeof(struct _eenv_debug) *
-	 *  (EAS_CPU_CNT * EAS_EENV_DEBUG_LEVELS)
-	 * bytes allocated here.
-	 */
-	struct _eenv_debug *debug;
-#endif
-	/*
-	 * Index (into energy_env::cpu) of the morst energy efficient CPU for
-	 * the specified energy_env::task
-	 */
-	int	next_idx;
-	int	max_cpu_count;
-
-	/* Support data */
-	struct sched_group	*sg_top;
-	struct sched_group	*sg_cap;
-	struct sched_group	*sg;
 };
 
 /*
