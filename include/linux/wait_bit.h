@@ -18,7 +18,6 @@ struct wait_bit_queue_entry {
 #define __WAIT_ATOMIC_T_KEY_INITIALIZER(p)					\
 	{ .flags = p, .bit_nr = WAIT_ATOMIC_T_BIT_NR, }
 
-typedef int wait_bit_action_f(struct wait_bit_key *key, int mode);
 void __wake_up_bit(struct wait_queue_head *wq_head, void *word, int bit);
 void wake_up_bit(void *word, int bit);
 void wake_up_atomic_t(atomic_t *p);
