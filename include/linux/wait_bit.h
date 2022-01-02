@@ -6,12 +6,6 @@
  */
 #include <linux/wait.h>
 
-struct wait_bit_key {
-	void			*flags;
-	int			bit_nr;
-#define WAIT_ATOMIC_T_BIT_NR	-1
-	unsigned long		timeout;
-};
 
 struct wait_bit_queue_entry {
 	struct wait_bit_key	key;
@@ -26,8 +20,6 @@ struct wait_bit_queue_entry {
 
 typedef int wait_bit_action_f(struct wait_bit_key *key, int mode);
 void __wake_up_bit(struct wait_queue_head *wq_head, void *word, int bit);
-int __wait_on_bit(struct wait_queue_head *wq_head, struct wait_bit_queue_entry *wbq_entry, wait_bit_action_f *action, unsigned int mode);
-int __wait_on_bit_lock(struct wait_queue_head *wq_head, struct wait_bit_queue_entry *wbq_entry, wait_bit_action_f *action, unsigned int mode);
 void wake_up_bit(void *word, int bit);
 void wake_up_atomic_t(atomic_t *p);
 int out_of_line_wait_on_bit(void *word, int, wait_bit_action_f *action, unsigned int mode);
