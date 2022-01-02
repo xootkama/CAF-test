@@ -179,11 +179,7 @@ __add_wait_queue_exclusive(struct wait_queue_head *wq_head, struct wait_queue_en
 
 static inline void __add_wait_queue_entry_tail(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
-<<<<<<< HEAD
-	list_add_tail(&wq_entry->entry, &wq_head->head);
-=======
 	list_add_tail(&wq_entry->task_list, &wq_head->task_list);
->>>>>>> 9d9d676f595b (sched/wait: Standardize internal naming of wait-queue heads)
 }
 
 static inline void
