@@ -8221,14 +8221,7 @@ LIST_HEAD(task_groups);
 
 /* Cacheline aligned slab cache for task_group */
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
-	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
-#endif
-#ifdef CONFIG_RT_GROUP_SCHED
-	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
-#endif
-	if (alloc_size) {
-		ptr = (unsigned long)kzalloc(alloc_size, GFP_NOWAIT);
+
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		root_task_group.se = (struct sched_entity **)ptr;
@@ -8256,40 +8249,6 @@ LIST_HEAD(task_groups);
 	}
 #endif /* CONFIG_CPUMASK_OFFSTACK */
 
-	init_rt_bandwidth(&def_rt_bandwidth,
-			global_rt_period(), global_rt_runtime());
-	init_dl_bandwidth(&def_dl_bandwidth,
-			global_rt_period(), global_rt_runtime());
-
-#ifdef CONFIG_SMP
-	init_defrootdomain();
-#endif
-
-#ifdef CONFIG_RT_GROUP_SCHED
-	init_rt_bandwidth(&root_task_group.rt_bandwidth,
-			global_rt_period(), global_rt_runtime());
-#endif /* CONFIG_RT_GROUP_SCHED */
-
-#ifdef CONFIG_CGROUP_SCHED
-	task_group_cache = KMEM_CACHE(task_group, 0);
-
-	list_add(&root_task_group.list, &task_groups);
-	INIT_LIST_HEAD(&root_task_group.children);
-	INIT_LIST_HEAD(&root_task_group.siblings);
-	autogroup_init(&init_task);
-#endif /* CONFIG_CGROUP_SCHED */
-
-	for_each_possible_cpu(i) {
-		struct rq *rq;
-
-		rq = cpu_rq(i);
-		raw_spin_lock_init(&rq->lock);
-		rq->nr_running = 0;
-		rq->calc_load_active = 0;
-		rq->calc_load_update = jiffies + LOAD_FREQ;
-		init_cfs_rq(&rq->cfs);
-		init_rt_rq(&rq->rt);
-		init_dl_rq(&rq->dl);
 #ifdef VENDOR_EDIT
 // Liujie.Xie@TECH.Kernel.Sched, 2019/05/22, add for ui first
         ux_init_rq_data(rq);
