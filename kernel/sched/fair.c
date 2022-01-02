@@ -5232,6 +5232,19 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 DEFINE_PER_CPU(cpumask_var_t, load_balance_mask);
 DEFINE_PER_CPU(cpumask_var_t, select_idle_mask);
 
+#ifdef CONFIG_SCHED_CORE_ROTATE
+static int rotate_cpu_start;
+static DEFINE_SPINLOCK(rotate_lock);
+static unsigned long avoid_prev_cpu_last;
+
+static struct find_first_cpu_bit_env first_cpu_bit_env = {
+	.avoid_prev_cpu_last = &avoid_prev_cpu_last,
+	.rotate_cpu_start = &rotate_cpu_start,
+	.interval = HZ,
+	.rotate_lock = &rotate_lock,
+};
+#endif
+
 #ifdef CONFIG_NO_HZ_COMMON
 /*
  * per rq 'load' arrray crap; XXX kill this.
@@ -6735,65 +6748,6 @@ static inline bool test_idle_cores(int cpu, bool def)
 }
 
 /*
- * Implement a for_each_cpu() variant that starts the scan at a given cpu
- * (@start), and wraps around.
- *
- * This is used to scan for idle CPUs; such that not all CPUs looking for an
- * idle CPU find the same CPU. The down-side is that tasks tend to cycle
- * through the LLC domain.
- *
- * Especially tbench is found sensitive to this.
- */
-
-static int cpumask_next_wrap(int n, const struct cpumask *mask, int start, int *wrapped)
-{
-	int next;
-
-again:
-	next = find_next_bit(cpumask_bits(mask), nr_cpumask_bits, n+1);
-
-	if (*wrapped) {
-		if (next >= start)
-			return nr_cpumask_bits;
-	} else {
-		if (next >= nr_cpumask_bits) {
-			*wrapped = 1;
-			n = -1;
-			goto again;
-		}
-	}
-
-	return next;
-}
-
-#define for_each_cpu_wrap(cpu, mask, start, wrap)				\
-	for ((wrap) = 0, (cpu) = (start)-1;					\
-		(cpu) = cpumask_next_wrap((cpu), (mask), (start), &(wrap)),	\
-		(cpu) < nr_cpumask_bits; )
-
-#ifdef CONFIG_SCHED_SMT
-
-static inline void set_idle_cores(int cpu, int val)
-{
-	struct sched_domain_shared *sds;
-
-	sds = rcu_dereference(per_cpu(sd_llc_shared, cpu));
-	if (sds)
-		WRITE_ONCE(sds->has_idle_cores, val);
-}
-
-static inline bool test_idle_cores(int cpu, bool def)
-{
-	struct sched_domain_shared *sds;
-
-	sds = rcu_dereference(per_cpu(sd_llc_shared, cpu));
-	if (sds)
-		return READ_ONCE(sds->has_idle_cores);
-
-	return def;
-}
-
-/*
  * Scans the local SMT mask to see if the entire core is idle, and records this
  * information in sd_llc_shared->has_idle_cores.
  *
@@ -6830,14 +6784,14 @@ unlock:
 static int select_idle_core(struct task_struct *p, struct sched_domain *sd, int target)
 {
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
-	int core, cpu, wrap;
+	int core, cpu;
 
 	if (!test_idle_cores(target, false))
 		return -1;
 
 	cpumask_and(cpus, sched_domain_span(sd), tsk_cpus_allowed(p));
 
-	for_each_cpu_wrap(core, cpus, target, wrap) {
+	for_each_cpu_wrap(core, cpus, target) {
 		bool idle = true;
 
 		for_each_cpu(cpu, cpu_smt_mask(core)) {
@@ -6896,23 +6850,28 @@ static inline int select_idle_smt(struct task_struct *p, struct sched_domain *sd
  */
 static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int target)
 {
-	struct sched_domain *this_sd = rcu_dereference(*this_cpu_ptr(&sd_llc));
-	u64 avg_idle = this_rq()->avg_idle;
-	u64 avg_cost = this_sd->avg_scan_cost;
+	struct sched_domain *this_sd;
+	u64 avg_cost, avg_idle = this_rq()->avg_idle;
 	u64 time, cost;
 	s64 delta;
-	int cpu, wrap;
+	int cpu;
+
+	this_sd = rcu_dereference(*this_cpu_ptr(&sd_llc));
+	if (!this_sd)
+		return -1;
+
+	avg_cost = this_sd->avg_scan_cost;
 
 	/*
 	 * Due to large variance we need a large fuzz factor; hackbench in
 	 * particularly is sensitive here.
 	 */
-	if ((avg_idle / 512) < avg_cost)
+	if (sched_feat(SIS_AVG_CPU) && (avg_idle / 512) < avg_cost)
 		return -1;
 
 	time = local_clock();
 
-	for_each_cpu_wrap(cpu, sched_domain_span(sd), target, wrap) {
+	for_each_cpu_wrap(cpu, sched_domain_span(sd), target) {
 		if (!cpumask_test_cpu(cpu, tsk_cpus_allowed(p)))
 			continue;
 		if (idle_cpu(cpu))
@@ -6933,7 +6892,11 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 static int select_idle_sibling(struct task_struct *p, int prev, int target)
 {
 	struct sched_domain *sd;
-	int i, recent_used_cpu;
+	struct sched_group *sg;
+	int i = task_cpu(p);
+	int best_idle_cpu = -1;
+	int best_idle_cstate = INT_MAX;
+	unsigned long best_idle_capacity = ULONG_MAX;
 
 	schedstat_inc(p->se.statistics.nr_wakeups_sis_attempts);
 	schedstat_inc(this_rq()->eas_stats.sis_attempts);
@@ -6972,41 +6935,64 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target)
 	}
 
 	/*
-	 * If the previous cpu is cache affine and idle, don't be stupid.
+	 * Otherwise, iterate the domains and find an elegible idle cpu.
 	 */
-	if (prev != target && cpus_share_cache(prev, target) && idle_cpu(prev))
-		return prev;
+	sd = rcu_dereference(per_cpu(sd_llc, target));
+	for_each_lower_domain(sd) {
+		sg = sd->groups;
+		do {
+			if (!cpumask_intersects(sched_group_cpus(sg),
+                                        tsk_cpus_allowed(p)))
+				goto next;
 
-	/* Check a recently used CPU as a potential idle candidate */
-	recent_used_cpu = p->recent_used_cpu;
-	if (recent_used_cpu != prev &&
-	    recent_used_cpu != target &&
-	    cpus_share_cache(recent_used_cpu, target) &&
-	    idle_cpu(recent_used_cpu) &&
-	    cpumask_test_cpu(p->recent_used_cpu, &p->cpus_allowed)) {
-		/*
-		 * Replace recent_used_cpu with prev as it is a potential
-		 * candidate for the next wake.
-		 */
-		p->recent_used_cpu = prev;
-		return recent_used_cpu;
+
+			if (sysctl_sched_cstate_aware) {
+				for_each_cpu_and(i, tsk_cpus_allowed(p), sched_group_cpus(sg)) {
+					int idle_idx = idle_get_state_idx(cpu_rq(i));
+					unsigned long new_usage = boosted_task_util(p);
+					unsigned long capacity_orig = capacity_orig_of(i);
+
+					if (new_usage > capacity_orig || !idle_cpu(i))
+						goto next;
+
+					if (i == target && new_usage <= capacity_curr_of(target)) {
+						schedstat_inc(p->se.statistics.nr_wakeups_sis_suff_cap);
+						schedstat_inc(this_rq()->eas_stats.sis_suff_cap);
+						schedstat_inc(sd->eas_stats.sis_suff_cap);
+						return target;
+					}
+
+					if (idle_idx < best_idle_cstate &&
+					    capacity_orig <= best_idle_capacity) {
+						best_idle_cpu = i;
+						best_idle_cstate = idle_idx;
+						best_idle_capacity = capacity_orig;
+					}
+				}
+			} else {
+				for_each_cpu(i, sched_group_cpus(sg)) {
+					if (i == target || !idle_cpu(i))
+						goto next;
+				}
+
+				target = cpumask_first_and(sched_group_cpus(sg),
+					tsk_cpus_allowed(p));
+				schedstat_inc(p->se.statistics.nr_wakeups_sis_idle_cpu);
+				schedstat_inc(this_rq()->eas_stats.sis_idle_cpu);
+				schedstat_inc(sd->eas_stats.sis_idle_cpu);
+				goto done;
+			}
+next:
+			sg = sg->next;
+		} while (sg != sd->groups);
 	}
 
-	sd = rcu_dereference(per_cpu(sd_llc, target));
-	if (!sd)
-		return target;
+	if (best_idle_cpu >= 0)
+		target = best_idle_cpu;
 
-	i = select_idle_core(p, sd, target);
-	if ((unsigned)i < nr_cpumask_bits)
-		return i;
-
-	i = select_idle_cpu(p, sd, target);
-	if ((unsigned)i < nr_cpumask_bits)
-		return i;
-
-	i = select_idle_smt(p, sd, target);
-	if ((unsigned)i < nr_cpumask_bits)
-		return i;
+done:
+	schedstat_inc(p->se.statistics.nr_wakeups_sis_count);
+	schedstat_inc(this_rq()->eas_stats.sis_count);
 
 	return target;
 }
@@ -10172,7 +10158,8 @@ static struct rq *find_busiest_queue(struct lb_env *env,
  * Max backoff if we encounter pinned tasks. Pretty arbitrary value, but
  * so long as it is large enough.
  */
-#define MAX_PINNED_INTERVAL	512
+#define MAX_PINNED_INTERVAL	16
+#define NEED_ACTIVE_BALANCE_THRESHOLD 10
 
 static int need_active_balance(struct lb_env *env)
 {
