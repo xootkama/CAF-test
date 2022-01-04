@@ -393,6 +393,33 @@ enum migrate_types {
 	RQ_TO_GROUP,
 };
 
+#include <linux/spinlock.h>
+
+/*
+ * This serializes "schedule()" and also protects
+ * the run-queue from deletions/modifications (but
+ * _adding_ to the beginning of the run-queue has
+ * a separate lock).
+ */
+extern rwlock_t tasklist_lock;
+extern spinlock_t mmlist_lock;
+
+struct task_struct;
+
+#ifdef CONFIG_PROVE_RCU
+extern int lockdep_tasklist_lock_is_held(void);
+#endif /* #ifdef CONFIG_PROVE_RCU */
+
+extern void sched_init(void);
+extern void sched_init_smp(void);
+extern asmlinkage void schedule_tail(struct task_struct *prev);
+extern void init_idle(struct task_struct *idle, int cpu);
+extern void init_idle_bootup_task(struct task_struct *idle);
+
+extern cpumask_var_t cpu_isolated_map;
+
+extern int runqueue_is_locked(int cpu);
+
 #ifdef CONFIG_HOTPLUG_CPU
 extern int sched_isolate_count(const cpumask_t *mask, bool include_offline);
 extern int sched_isolate_cpu(int cpu);
@@ -428,6 +455,37 @@ static inline int sched_unisolate_cpu_unlocked(int cpu)
 }
 #endif
 
+#if defined(CONFIG_SMP) && defined(CONFIG_NO_HZ_COMMON)
+extern void nohz_balance_enter_idle(int cpu);
+extern void set_cpu_sd_state_idle(void);
+extern int get_nohz_timer_target(void);
+#else
+static inline void nohz_balance_enter_idle(int cpu) { }
+static inline void set_cpu_sd_state_idle(void) { }
+#endif
+
+/*
+ * Only dump TASK_* tasks. (0 for all tasks)
+ */
+extern void show_state_filter(unsigned long state_filter);
+
+static inline void show_state(void)
+{
+	show_state_filter(0);
+}
+
+extern void show_regs(struct pt_regs *);
+
+/*
+ * TASK is a pointer to the task whose backtrace we want to see (or NULL for current
+ * task), SP is the stack pointer of the first frame that should be shown in the back
+ * trace (or NULL if the entire call-chain of the task should be shown).
+ */
+extern void show_stack(struct task_struct *task, unsigned long *sp);
+
+extern void cpu_init (void);
+extern void trap_init(void);
+extern void update_process_times(int user);
 extern void scheduler_tick(void);
 extern int sched_cpu_starting(unsigned int cpu);
 extern int sched_cpu_activate(unsigned int cpu);
