@@ -281,26 +281,6 @@ bool task_set_jobctl_pending(struct task_struct *task, unsigned long mask)
 	return true;
 }
 
-/**
- * task_clear_jobctl_trapping - clear jobctl trapping bit
- * @task: target task
- *
- * If JOBCTL_TRAPPING is set, a ptracer is waiting for us to enter TRACED.
- * Clear it and wake up the ptracer.  Note that we don't need any further
- * locking.  @task->siglock guarantees that @task->parent points to the
- * ptracer.
- *
- * CONTEXT:
- * Must be called with @task->sighand->siglock held.
- */
-void task_clear_jobctl_trapping(struct task_struct *task)
-{
-	if (unlikely(task->jobctl & JOBCTL_TRAPPING)) {
-		task->jobctl &= ~JOBCTL_TRAPPING;
-		smp_mb();	/* advised by wake_up_bit() */
-		wake_up_bit(&task->jobctl, JOBCTL_TRAPPING_BIT);
-	}
-}
 
 /**
  * task_clear_jobctl_pending - clear jobctl pending bits

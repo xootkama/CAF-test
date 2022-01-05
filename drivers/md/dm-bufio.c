@@ -691,31 +691,6 @@ static void submit_io(struct dm_buffer *b, int rw, sector_t block,
  * Writing dirty buffers
  *--------------------------------------------------------------*/
 
-/*
- * The endio routine for write.
- *
- * Set the error, clear B_WRITING bit and wake anyone who was waiting on
- * it.
- */
-static void write_endio(struct bio *bio)
-{
-	struct dm_buffer *b = container_of(bio, struct dm_buffer, bio);
-
-	b->write_error = bio->bi_error;
-	if (unlikely(bio->bi_error)) {
-		struct dm_bufio_client *c = b->c;
-		int error = bio->bi_error;
-		(void)cmpxchg(&c->async_write_error, 0, error);
-	}
-
-	BUG_ON(!test_bit(B_WRITING, &b->state));
-
-	smp_mb__before_atomic();
-	clear_bit(B_WRITING, &b->state);
-	smp_mb__after_atomic();
-
-	wake_up_bit(&b->state, B_WRITING);
-}
 
 /*
  * Initiate a write on a dirty buffer, but don't wait for it.
@@ -1029,24 +1004,6 @@ found_buffer:
 	return b;
 }
 
-/*
- * The endio routine for reading: set the error, clear the bit and wake up
- * anyone waiting on the buffer.
- */
-static void read_endio(struct bio *bio)
-{
-	struct dm_buffer *b = container_of(bio, struct dm_buffer, bio);
-
-	b->read_error = bio->bi_error;
-
-	BUG_ON(!test_bit(B_READING, &b->state));
-
-	smp_mb__before_atomic();
-	clear_bit(B_READING, &b->state);
-	smp_mb__after_atomic();
-
-	wake_up_bit(&b->state, B_READING);
-}
 
 /*
  * A common routine for dm_bufio_new and dm_bufio_read.  Operation of these
