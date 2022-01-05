@@ -457,38 +457,6 @@ void __wake_up_bit(wait_queue_head_t *wq, void *word, int bit)
 }
 EXPORT_SYMBOL(__wake_up_bit);
 
-/**
- * wake_up_bit - wake up a waiter on a bit
- * @word: the word being waited on, a kernel virtual address
- * @bit: the bit of the word being waited on
- *
- * There is a standard hashed waitqueue table for generic use. This
- * is the part of the hashtable's accessor API that wakes up waiters
- * on a bit. For instance, if one were to have waiters on a bitflag,
- * one would call wake_up_bit() after clearing the bit.
- *
- * In order for this to function properly, as it uses waitqueue_active()
- * internally, some kind of memory barrier must be done prior to calling
- * this. Typically, this will be smp_mb__after_atomic(), but in some
- * cases where bitflags are manipulated non-atomically under a lock, one
- * may need to use a less regular barrier, such fs/inode.c's smp_mb(),
- * because spin_unlock() does not guarantee a memory barrier.
- */
-void wake_up_bit(void *word, int bit)
-{
-	__wake_up_bit(bit_waitqueue(word, bit), word, bit);
-}
-EXPORT_SYMBOL(wake_up_bit);
-
-wait_queue_head_t *bit_waitqueue(void *word, int bit)
-{
-	const int shift = BITS_PER_LONG == 32 ? 5 : 6;
-	const struct zone *zone = page_zone(virt_to_page(word));
-	unsigned long val = (unsigned long)word << shift | bit;
-
-	return &zone->wait_table[hash_long(val, zone->wait_table_bits)];
-}
-EXPORT_SYMBOL(bit_waitqueue);
 
 /*
  * Manipulate the atomic_t address to produce a better bit waitqueue table hash
