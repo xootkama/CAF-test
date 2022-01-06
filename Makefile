@@ -296,6 +296,7 @@ hdr-arch  := $(SRCARCH)
 KCONFIG_CONFIG	?= .config
 export KCONFIG_CONFIG
 
+endif
 # Decide whether to build built-in, modular, or both.
 # Normally, just do built-in.
 
@@ -1708,4 +1709,3 @@ FORCE:
 # information in a variable so we can use it in if_changed and friends.
 .PHONY: $(PHONY)
 
-endif
