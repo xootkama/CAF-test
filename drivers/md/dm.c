@@ -2362,49 +2362,6 @@ out:
 }
 
 /*
- * Internal suspend/resume works like userspace-driven suspend. It waits
- * until all bios finish and prevents issuing new bios to the target drivers.
- * It may be used only from the kernel.
- */
-
-static void __dm_internal_suspend(struct mapped_device *md, unsigned suspend_flags)
-{
-	struct dm_table *map = NULL;
-
-	if (md->internal_suspend_count++)
-		return; /* nested internal suspend */
-
-	if (dm_suspended_md(md)) {
-		set_bit(DMF_SUSPENDED_INTERNALLY, &md->flags);
-		return; /* nest suspend */
-	}
-
-	map = rcu_dereference_protected(md->map, lockdep_is_held(&md->suspend_lock));
-
-	/*
-	 * Using TASK_UNINTERRUPTIBLE because only NOFLUSH internal suspend is
-	 * supported.  Properly supporting a TASK_INTERRUPTIBLE internal suspend
-	 * would require changing .presuspend to return an error -- avoid this
-	 * until there is a need for more elaborate variants of internal suspend.
-	 */
-	(void) __dm_suspend(md, map, suspend_flags, TASK_UNINTERRUPTIBLE,
-			    DMF_SUSPENDED_INTERNALLY);
-
-	dm_table_postsuspend_targets(map);
-}
-
-static void __dm_internal_resume(struct mapped_device *md)
-{
-	BUG_ON(!md->internal_suspend_count);
-
-	if (--md->internal_suspend_count)
-		return; /* resume from nested internal suspend */
-
-	if (dm_suspended_md(md))
-		goto done; /* resume from nested suspend */
-
-
-/*
  * Fast variants of internal suspend/resume hold md->suspend_lock,
  * which prevents interaction with userspace-driven suspend.
  */
