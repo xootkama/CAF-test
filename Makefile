@@ -1,6 +1,6 @@
 VERSION = 4
 PATCHLEVEL = 9
-SUBLEVEL = 294
+SUBLEVEL = 227
 EXTRAVERSION =
 NAME = Roaring Lionus
 
@@ -296,7 +296,21 @@ hdr-arch  := $(SRCARCH)
 KCONFIG_CONFIG	?= .config
 export KCONFIG_CONFIG
 
+# SHELL used by kbuild
+CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
+	  else if [ -x /bin/bash ]; then echo /bin/bash; \
+	  else echo sh; fi ; fi)
+
+HOSTCC       = gcc
+HOSTCXX      = g++
+HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89
+HOSTCXXFLAGS = -O2
+
+ifeq ($(shell $(HOSTCC) -v 2>&1 | grep -c "clang version"), 1)
+HOSTCFLAGS  += -Wno-unused-value -Wno-unused-parameter \
+		-Wno-missing-field-initializers
 endif
+
 # Decide whether to build built-in, modular, or both.
 # Normally, just do built-in.
 
@@ -384,8 +398,9 @@ LINUXINCLUDE    := \
 LINUXINCLUDE	+= $(filter-out $(LINUXINCLUDE),$(USERINCLUDE))
 
 KBUILD_AFLAGS   := -D__ASSEMBLY__
-KBUILD_CFLAGS   := -Wall -Wno-trigraphs \
-		    -fno-common -fshort-wchar \
+KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+		   -fno-strict-aliasing -fno-common -fshort-wchar \
+		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
 		   -std=gnu89
 KBUILD_CPPFLAGS := -D__KERNEL__
@@ -526,6 +541,55 @@ ifneq ($(filter install,$(MAKECMDGOALS)),)
         ifneq ($(filter modules_install,$(MAKECMDGOALS)),)
 	        mixed-targets := 1
         endif
+endif
+
+ifeq ($(cc-name),clang)
+ifneq ($(CROSS_COMPILE),)
+CLANG_TRIPLE	?= $(CROSS_COMPILE)
+CLANG_FLAGS	+= --target=$(notdir $(CLANG_TRIPLE:%-=%))
+ifeq ($(shell $(srctree)/scripts/clang-android.sh $(CC) $(CLANG_FLAGS)), y)
+$(error "Clang with Android --target detected. Did you specify CLANG_TRIPLE?")
+endif
+GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
+CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)
+GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
+endif
+ifneq ($(GCC_TOOLCHAIN),)
+CLANG_FLAGS	+= --gcc-toolchain=$(GCC_TOOLCHAIN)
+endif
+KBUILD_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-variable)
+KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
+KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
+KBUILD_CFLAGS += $(call cc-disable-warning, address-of-packed-member)
+KBUILD_CFLAGS += $(call cc-disable-warning, duplicate-decl-specifier)
+KBUILD_CFLAGS += $(call cc-disable-warning, undefined-optimized)
+KBUILD_CFLAGS += $(call cc-disable-warning, tautological-constant-out-of-range-compare)
+KBUILD_CFLAGS += -Wno-asm-operand-widths
+KBUILD_CFLAGS += -Wno-initializer-overrides
+KBUILD_CFLAGS += -fno-builtin
+
+# Quiet clang warning: comparison of unsigned expression < 0 is always false
+
+KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
+# CLANG uses a _MergedGlobals as optimization, but this breaks modpost, as the
+# source of a reference will be _MergedGlobals and not on of the whitelisted names.
+# See modpost pattern 2
+KBUILD_CFLAGS += $(call cc-option, -mno-global-merge,)
+KBUILD_CFLAGS += $(call cc-option, -fcatch-undefined-behavior)
+CLANG_FLAGS	+= -no-integrated-as
+CLANG_FLAGS	+= -Werror=unknown-warning-option
+CLANG_FLAGS	+= $(call cc-option, -Wno-misleading-indentation)
+CLANG_FLAGS	+= $(call cc-option, -Wno-bool-operation)
+KBUILD_CFLAGS	+= $(CLANG_FLAGS)
+KBUILD_AFLAGS	+= $(CLANG_FLAGS)
+else
+
+KBUILD_CFLAGS += $(call cc-option,-fno-delete-null-pointer-checks,)
+# These warnings generated too much noise in a regular build.
+# Use make W=1 to enable them (see scripts/Makefile.build)
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
 endif
 
 
@@ -695,6 +759,43 @@ KBUILD_CFLAGS	+= $(lto-flags)
 DISABLE_LTO	:= $(DISABLE_LTO_CLANG)
 export DISABLE_LTO
 
+# LDFINAL_vmlinux and LDFLAGS_FINAL_vmlinux can be set to override
+# the linker and flags for vmlinux_link.
+export LDFINAL_vmlinux LDFLAGS_FINAL_vmlinux
+endif
+
+ifdef CONFIG_CFI_CLANG
+cfi-clang-flags	+= -fsanitize=cfi $(call cc-option, -fsplit-lto-unit)
+DISABLE_CFI_CLANG := -fno-sanitize=cfi
+ifdef CONFIG_MODULES
+cfi-clang-flags	+= -fsanitize-cfi-cross-dso
+DISABLE_CFI_CLANG += -fno-sanitize-cfi-cross-dso
+endif
+ifdef CONFIG_CFI_PERMISSIVE
+cfi-clang-flags	+= -fsanitize-recover=cfi -fno-sanitize-trap=cfi
+endif
+
+# also disable CFI when LTO is disabled
+DISABLE_LTO_CLANG += $(DISABLE_CFI_CLANG)
+# allow disabling only clang CFI where needed
+export DISABLE_CFI_CLANG
+endif
+
+ifdef CONFIG_CFI
+# cfi-flags are re-tested in prepare-compiler-check
+cfi-flags	:= $(cfi-clang-flags)
+KBUILD_CFLAGS	+= $(cfi-flags)
+
+DISABLE_CFI	:= $(DISABLE_CFI_CLANG)
+DISABLE_LTO	+= $(DISABLE_CFI)
+export DISABLE_CFI
+endif
+
+ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
+KBUILD_CFLAGS   += -Os
+else
+KBUILD_CFLAGS   += -O2
+endif
 
 # Tell gcc to never replace conditional load with a non-conditional one
 KBUILD_CFLAGS	+= $(call cc-option,--param=allow-store-data-races=0)
@@ -720,6 +821,99 @@ endif
 
 ifneq ($(CONFIG_FRAME_WARN),0)
 KBUILD_CFLAGS += $(call cc-option,-Wframe-larger-than=${CONFIG_FRAME_WARN})
+endif
+
+# This selects the stack protector compiler flag. Testing it is delayed
+# until after .config has been reprocessed, in the prepare-compiler-check
+# target.
+ifdef CONFIG_CC_STACKPROTECTOR_REGULAR
+  stackp-flag := -fstack-protector
+  stackp-name := REGULAR
+else
+ifdef CONFIG_CC_STACKPROTECTOR_STRONG
+  stackp-flag := -fstack-protector-strong
+  stackp-name := STRONG
+else
+  # Force off for distro compilers that enable stack protector by default.
+  stackp-flag := $(call cc-option, -fno-stack-protector)
+endif
+endif
+# Find arch-specific stack protector compiler sanity-checking script.
+ifdef CONFIG_CC_STACKPROTECTOR
+  stackp-path := $(srctree)/scripts/gcc-$(SRCARCH)_$(BITS)-has-stack-protector.sh
+  stackp-check := $(wildcard $(stackp-path))
+endif
+KBUILD_CFLAGS += $(stackp-flag)
+
+ifeq ($(cc-name),clang)
+KBUILD_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
+KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
+KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
+KBUILD_CFLAGS += $(call cc-disable-warning, duplicate-decl-specifier)
+KBUILD_CFLAGS += $(call cc-disable-warning, pointer-bool-conversion)
+# Quiet clang warning: comparison of unsigned expression < 0 is always false
+KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
+# CLANG uses a _MergedGlobals as optimization, but this breaks modpost, as the
+# source of a reference will be _MergedGlobals and not on of the whitelisted names.
+# See modpost pattern 2
+KBUILD_CFLAGS += $(call cc-option, -mno-global-merge,)
+KBUILD_CFLAGS += $(call cc-option, -fcatch-undefined-behavior)
+else
+
+# These warnings generated too much noise in a regular build.
+# Use make W=1 to enable them (see scripts/Makefile.extrawarn)
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
+endif
+
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
+ifdef CONFIG_FRAME_POINTER
+KBUILD_CFLAGS	+= -fno-omit-frame-pointer -fno-optimize-sibling-calls
+else
+# Some targets (ARM with Thumb2, for example), can't be built with frame
+# pointers.  For those, we don't have FUNCTION_TRACER automatically
+# select FRAME_POINTER.  However, FUNCTION_TRACER adds -pg, and this is
+# incompatible with -fomit-frame-pointer with current GCC, so we don't use
+# -fomit-frame-pointer with FUNCTION_TRACER.
+ifndef CONFIG_FUNCTION_TRACER
+KBUILD_CFLAGS	+= -fomit-frame-pointer
+endif
+endif
+
+KBUILD_CFLAGS   += $(call cc-option, -fno-var-tracking-assignments)
+
+ifdef CONFIG_DEBUG_INFO
+ifdef CONFIG_DEBUG_INFO_SPLIT
+KBUILD_CFLAGS   += $(call cc-option, -gsplit-dwarf, -g)
+else
+KBUILD_CFLAGS	+= -g
+endif
+KBUILD_AFLAGS	+= -Wa,-gdwarf-2
+endif
+ifdef CONFIG_DEBUG_INFO_DWARF4
+KBUILD_CFLAGS	+= $(call cc-option, -gdwarf-4,)
+endif
+
+ifdef CONFIG_DEBUG_INFO_REDUCED
+KBUILD_CFLAGS 	+= $(call cc-option, -femit-struct-debug-baseonly) \
+		   $(call cc-option,-fno-var-tracking)
+endif
+
+ifdef CONFIG_FUNCTION_TRACER
+ifndef CC_FLAGS_FTRACE
+CC_FLAGS_FTRACE := -pg
+endif
+export CC_FLAGS_FTRACE
+ifdef CONFIG_HAVE_FENTRY
+CC_USING_FENTRY	:= $(call cc-option, -mfentry -DCC_USING_FENTRY)
+endif
+KBUILD_CFLAGS	+= $(CC_FLAGS_FTRACE) $(CC_USING_FENTRY)
+KBUILD_AFLAGS	+= $(CC_USING_FENTRY)
+ifdef CONFIG_DYNAMIC_FTRACE
+	ifdef CONFIG_HAVE_C_RECORDMCOUNT
+		BUILD_C_RECORDMCOUNT := y
+		export BUILD_C_RECORDMCOUNT
+	endif
+endif
 endif
 
 # We trigger additional mismatches with less inlining
@@ -754,6 +948,11 @@ KBUILD_CFLAGS += $(call cc-disable-warning, maybe-uninitialized)
 # disable invalid "can't wrap" optimizations for signed / pointers
 KBUILD_CFLAGS	+= $(call cc-option,-fno-strict-overflow)
 
+# clang sets -fmerge-all-constants by default as optimization, but this
+# is non-conforming behavior for C and in fact breaks the kernel, so we
+# need to disable it here generally.
+KBUILD_CFLAGS	+= $(call cc-option,-fno-merge-all-constants)
+
 # for gcc -fno-merge-all-constants disables everything, but it is fine
 # to have actual conforming behavior enabled.
 KBUILD_CFLAGS	+= $(call cc-option,-fmerge-constants)
@@ -763,6 +962,12 @@ KBUILD_CFLAGS  += $(call cc-option,-fno-stack-check,)
 
 # conserve stack if available
 KBUILD_CFLAGS   += $(call cc-option,-fconserve-stack)
+
+# disallow errors like 'EXPORT_GPL(foo);' with missing header
+KBUILD_CFLAGS   += $(call cc-option,-Werror=implicit-int)
+
+# require functions to have arguments in prototypes, not empty 'int foo()'
+KBUILD_CFLAGS   += $(call cc-option,-Werror=strict-prototypes)
 
 # Prohibit date/time macros, which would make the build non-deterministic
 KBUILD_CFLAGS   += $(call cc-option,-Werror=date-time)
@@ -1708,4 +1913,3 @@ FORCE:
 # Declare the contents of the .PHONY variable as phony.  We keep that
 # information in a variable so we can use it in if_changed and friends.
 .PHONY: $(PHONY)
-
