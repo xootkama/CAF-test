@@ -1047,13 +1047,10 @@ static int message_stats_create(struct mapped_device *md,
 		goto ret;
 	}
 
-	id = dm_stats_create(dm_get_stats(md), start, end, step, stat_flags,
-			     n_histogram_entries, histogram_boundaries, program_id, aux_data,
-			     dm_internal_suspend_fast, dm_internal_resume_fast, md);
-	if (id < 0) {
-		r = id;
-		goto ret;
-	}
+	id = dm_stats_create(dm_get_stats(md), start, end, step, program_id, aux_data,
+			     dm_internal_suspend, dm_internal_resume, md);
+	if (id < 0)
+		return id;
 
 	snprintf(result, maxlen, "%d", id);
 
