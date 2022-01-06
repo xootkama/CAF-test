@@ -13,9 +13,9 @@
 
 void __init_waitqueue_head(wait_queue_head_t *q, const char *name, struct lock_class_key *key)
 {
-	spin_lock_init(&q->lock);
-	lockdep_set_class_and_name(&q->lock, key, name);
-	INIT_LIST_HEAD(&q->task_list);
+	spin_lock_init(&wq_head->lock);
+	lockdep_set_class_and_name(&wq_head->lock, key, name);
+	INIT_LIST_HEAD(&wq_head->task_list);
 }
 
 EXPORT_SYMBOL(__init_waitqueue_head);
@@ -67,7 +67,7 @@ static void __wake_up_common(wait_queue_head_t *q, unsigned int mode,
 {
 	wait_queue_t *curr, *next;
 
-	list_for_each_entry_safe(curr, next, &q->task_list, task_list) {
+	list_for_each_entry_safe(curr, next, &wq_head->task_list, task_list) {
 		unsigned flags = curr->flags;
 
 		if (curr->func(curr, mode, wake_flags, key) &&
@@ -173,10 +173,10 @@ prepare_to_wait(wait_queue_head_t *q, wait_queue_t *wait, int state)
 {
 	unsigned long flags;
 
-	wait->flags &= ~WQ_FLAG_EXCLUSIVE;
-	spin_lock_irqsave(&q->lock, flags);
-	if (list_empty(&wait->task_list))
-		__add_wait_queue(q, wait);
+	wq_entry->flags &= ~WQ_FLAG_EXCLUSIVE;
+	spin_lock_irqsave(&wq_head->lock, flags);
+	if (list_empty(&wq_entry->task_list))
+		__add_wait_queue(wq_head, wq_entry);
 	set_current_state(state);
 	spin_unlock_irqrestore(&q->lock, flags);
 }
@@ -187,10 +187,10 @@ prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_t *wait, int state)
 {
 	unsigned long flags;
 
-	wait->flags |= WQ_FLAG_EXCLUSIVE;
-	spin_lock_irqsave(&q->lock, flags);
-	if (list_empty(&wait->task_list))
-		__add_wait_queue_tail(q, wait);
+	wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+	spin_lock_irqsave(&wq_head->lock, flags);
+	if (list_empty(&wq_entry->task_list))
+		__add_wait_queue_entry_tail(wq_head, wq_entry);
 	set_current_state(state);
 	spin_unlock_irqrestore(&q->lock, flags);
 }
@@ -227,9 +227,9 @@ long prepare_to_wait_event(wait_queue_head_t *q, wait_queue_t *wait, int state)
 		list_del_init(&wait->task_list);
 		ret = -ERESTARTSYS;
 	} else {
-		if (list_empty(&wait->task_list)) {
-			if (wait->flags & WQ_FLAG_EXCLUSIVE)
-				__add_wait_queue_tail(q, wait);
+		if (list_empty(&wq_entry->task_list)) {
+			if (wq_entry->flags & WQ_FLAG_EXCLUSIVE)
+				__add_wait_queue_entry_tail(wq_head, wq_entry);
 			else
 				__add_wait_queue(q, wait);
 		}
@@ -268,10 +268,10 @@ void finish_wait(wait_queue_head_t *q, wait_queue_t *wait)
 	 *    have _one_ other CPU that looks at or modifies
 	 *    the list).
 	 */
-	if (!list_empty_careful(&wait->task_list)) {
-		spin_lock_irqsave(&q->lock, flags);
-		list_del_init(&wait->task_list);
-		spin_unlock_irqrestore(&q->lock, flags);
+	if (!list_empty_careful(&wq_entry->task_list)) {
+		spin_lock_irqsave(&wq_head->lock, flags);
+		list_del_init(&wq_entry->task_list);
+		spin_unlock_irqrestore(&wq_head->lock, flags);
 	}
 }
 EXPORT_SYMBOL(finish_wait);

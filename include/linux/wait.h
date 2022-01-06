@@ -134,7 +134,7 @@ init_waitqueue_func_entry(wait_queue_t *q, wait_queue_func_t func)
  */
 static inline int waitqueue_active(wait_queue_head_t *q)
 {
-	return !list_empty(&q->task_list);
+	return !list_empty(&wq_head->task_list);
 }
 
 /**
@@ -164,7 +164,7 @@ extern void remove_wait_queue(wait_queue_head_t *q, wait_queue_t *wait);
 
 static inline void __add_wait_queue(wait_queue_head_t *head, wait_queue_t *new)
 {
-	list_add(&new->task_list, &head->task_list);
+	list_add(&wq_entry->task_list, &wq_head->task_list);
 }
 
 /*
@@ -180,7 +180,7 @@ __add_wait_queue_exclusive(wait_queue_head_t *q, wait_queue_t *wait)
 static inline void __add_wait_queue_tail(wait_queue_head_t *head,
 					 wait_queue_t *new)
 {
-	list_add_tail(&new->task_list, &head->task_list);
+	list_add_tail(&wq_entry->task_list, &wq_head->task_list);
 }
 
 static inline void
@@ -981,41 +981,29 @@ do {									\
 /*
  * Waitqueues which are removed from the waitqueue_head at wakeup time
  */
-void prepare_to_wait(wait_queue_head_t *q, wait_queue_t *wait, int state);
-void prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_t *wait, int state);
-long prepare_to_wait_event(wait_queue_head_t *q, wait_queue_t *wait, int state);
-void finish_wait(wait_queue_head_t *q, wait_queue_t *wait);
-long wait_woken(wait_queue_t *wait, unsigned mode, long timeout);
-int woken_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
-int autoremove_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
-int wake_bit_function(wait_queue_t *wait, unsigned mode, int sync, void *key);
+void prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
+void prepare_to_wait_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
+long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
+void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
+long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout);
+int woken_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
+int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
 
-#define DEFINE_WAIT_FUNC(name, function)				\
-	wait_queue_t name = {						\
-		.private	= current,				\
-		.func		= function,				\
-		.task_list	= LIST_HEAD_INIT((name).task_list),	\
+#define DEFINE_WAIT_FUNC(name, function)					\
+	struct wait_queue_entry name = {					\
+		.private	= current,					\
+		.func		= function,					\
+		.task_list	= LIST_HEAD_INIT((name).task_list),		\
 	}
 
 #define DEFINE_WAIT(name) DEFINE_WAIT_FUNC(name, autoremove_wake_function)
 
-#define DEFINE_WAIT_BIT(name, word, bit)				\
-	struct wait_bit_queue name = {					\
-		.key = __WAIT_BIT_KEY_INITIALIZER(word, bit),		\
-		.wait	= {						\
-			.private	= current,			\
-			.func		= wake_bit_function,		\
-			.task_list	=				\
-				LIST_HEAD_INIT((name).wait.task_list),	\
-		},							\
-	}
-
-#define init_wait(wait)							\
-	do {								\
-		(wait)->private = current;				\
-		(wait)->func = autoremove_wake_function;		\
-		INIT_LIST_HEAD(&(wait)->task_list);			\
-		(wait)->flags = 0;					\
+#define init_wait(wait)								\
+	do {									\
+		(wait)->private = current;					\
+		(wait)->func = autoremove_wake_function;			\
+		INIT_LIST_HEAD(&(wait)->task_list);				\
+		(wait)->flags = 0;						\
 	} while (0)
 
 
