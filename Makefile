@@ -375,7 +375,6 @@ AFLAGS_MODULE   =
 LDFLAGS_MODULE  =
 CFLAGS_KERNEL	=
 AFLAGS_KERNEL	=
-LDFLAGS_vmlinux =
 
 # Use USERINCLUDE when you must reference the UAPI directories only.
 USERINCLUDE    := \
@@ -719,22 +718,6 @@ KBUILD_CFLAGS	+= $(lto-flags)
 DISABLE_LTO	:= $(DISABLE_LTO_CLANG)
 export DISABLE_LTO
 
-# LDFINAL_vmlinux and LDFLAGS_FINAL_vmlinux can be set to override
-# the linker and flags for vmlinux_link.
-export LDFINAL_vmlinux LDFLAGS_FINAL_vmlinux
-endif
-
-ifdef CONFIG_CFI_CLANG
-cfi-clang-flags	+= -fsanitize=cfi $(call cc-option, -fsplit-lto-unit)
-DISABLE_CFI_CLANG := -fno-sanitize=cfi
-ifdef CONFIG_MODULES
-cfi-clang-flags	+= -fsanitize-cfi-cross-dso
-DISABLE_CFI_CLANG += -fno-sanitize-cfi-cross-dso
-endif
-ifdef CONFIG_CFI_PERMISSIVE
-cfi-clang-flags	+= -fsanitize-recover=cfi -fno-sanitize-trap=cfi
-endif
-
 # also disable CFI when LTO is disabled
 DISABLE_LTO_CLANG += $(DISABLE_CFI_CLANG)
 # allow disabling only clang CFI where needed
@@ -940,14 +923,7 @@ KBUILD_CFLAGS   += $(ARCH_CFLAGS)   $(KCFLAGS)
 LDFLAGS_BUILD_ID = $(patsubst -Wl$(comma)%,%,\
 			      $(call cc-ldoption, -Wl$(comma)--build-id,))
 KBUILD_LDFLAGS_MODULE += $(LDFLAGS_BUILD_ID)
-LDFLAGS_vmlinux += $(LDFLAGS_BUILD_ID)
 
-ifdef CONFIG_LD_DEAD_CODE_DATA_ELIMINATION
-LDFLAGS_vmlinux	+= $(call ld-option, --gc-sections,)
-endif
-
-ifeq ($(CONFIG_STRIP_ASM_SYMS),y)
-LDFLAGS_vmlinux	+= $(call ld-option, -X,)
 endif
 
 # Default kernel image to build when no specific target is given.
@@ -1056,7 +1032,6 @@ virt-y		:= $(patsubst %/, %/built-in.o, $(virt-y))
 export KBUILD_VMLINUX_INIT := $(head-y) $(init-y)
 export KBUILD_VMLINUX_MAIN := $(core-y) $(libs-y) $(drivers-y) $(net-y) $(virt-y)
 export KBUILD_LDS          := arch/$(SRCARCH)/kernel/vmlinux.lds
-export LDFLAGS_vmlinux
 # used by scripts/pacmage/Makefile
 export KBUILD_ALLDIRS := $(sort $(filter-out arch/%,$(vmlinux-alldirs)) arch Documentation include samples scripts tools)
 
@@ -1086,7 +1061,7 @@ ARCH_POSTLINK := $(wildcard $(srctree)/arch/$(SRCARCH)/Makefile.postlink)
 
 # Final link of vmlinux with optional arch pass after final link
     cmd_link-vmlinux =                                                 \
-	$(CONFIG_SHELL) $< $(LD) $(LDFLAGS) $(LDFLAGS_vmlinux) ;       \
+	$(CONFIG_SHELL) $< $(LD) $(LDFLAGS) ;       \
 	$(if $(ARCH_POSTLINK), $(MAKE) -f $(ARCH_POSTLINK) $@, true)
 
 vmlinux: scripts/link-vmlinux.sh vmlinux_prereq $(vmlinux-deps) FORCE
