@@ -16,11 +16,7 @@
 #include <linux/stringify.h>
 #include <linux/kobject.h>
 #include <linux/moduleparam.h>
-#include <linux/jump_label.h>
-#include <linux/export.h>
-#include <linux/extable.h>	/* only as arch move module.h -> extable.h */
-#include <linux/rbtree_latch.h>
-#include <linux/cfi.h>
+#include <linux/tracepoint.h>
 
 #include <linux/percpu.h>
 #include <asm/module.h>
@@ -31,9 +27,23 @@
 /* Not Yet Implemented */
 #define MODULE_SUPPORTED_DEVICE(name)
 
+/* Some toolchains use a `_' prefix for all user symbols. */
+#ifdef CONFIG_SYMBOL_PREFIX
+#define MODULE_SYMBOL_PREFIX CONFIG_SYMBOL_PREFIX
+#else
+#define MODULE_SYMBOL_PREFIX ""
+#endif
+
 #define MODULE_NAME_LEN MAX_PARAM_PREFIX_LEN
 
-struct modversion_info {
+struct kernel_symbol
+{
+	unsigned long value;
+	const char *name;
+};
+
+struct modversion_info
+{
 	unsigned long crc;
 	char name[MODULE_NAME_LEN];
 };
@@ -138,6 +148,11 @@ extern void cleanup_module(void);
 	{ return exitfn; }					\
 	void cleanup_module(void) __copy(exitfn) __attribute__((alias(#exitfn)));
 
+extern struct module __this_module;
+#define THIS_MODULE (&__this_module)
+#else  /* !MODULE */
+#define MODULE_GENERIC_TABLE(gtype,name)
+#define THIS_MODULE ((struct module *)0)
 #endif
 
 /* This means "can be init if no module support, otherwise module load
@@ -276,11 +291,57 @@ struct module_use {
 	struct module *source, *target;
 };
 
-enum module_state {
-	MODULE_STATE_LIVE,	/* Normal state. */
-	MODULE_STATE_COMING,	/* Full formed, running module_init. */
-	MODULE_STATE_GOING,	/* Going away. */
-	MODULE_STATE_UNFORMED,	/* Still setting it up. */
+#ifndef __GENKSYMS__
+#ifdef CONFIG_MODVERSIONS
+/* Mark the CRC weak since genksyms apparently decides not to
+ * generate a checksums for some symbols */
+#define __CRC_SYMBOL(sym, sec)					\
+	extern void *__crc_##sym __attribute__((weak));		\
+	static const unsigned long __kcrctab_##sym		\
+	__used							\
+	__attribute__((section("___kcrctab" sec "+" #sym), unused))	\
+	= (unsigned long) &__crc_##sym;
+#else
+#define __CRC_SYMBOL(sym, sec)
+#endif
+
+/* For every exported symbol, place a struct in the __ksymtab section */
+#define __EXPORT_SYMBOL(sym, sec)				\
+	extern typeof(sym) sym;					\
+	__CRC_SYMBOL(sym, sec)					\
+	static const char __kstrtab_##sym[]			\
+	__attribute__((section("__ksymtab_strings"), aligned(1))) \
+	= MODULE_SYMBOL_PREFIX #sym;                    	\
+	static const struct kernel_symbol __ksymtab_##sym	\
+	__used							\
+	__attribute__((section("___ksymtab" sec "+" #sym), unused))	\
+	= { (unsigned long)&sym, __kstrtab_##sym }
+
+#define EXPORT_SYMBOL(sym)					\
+	__EXPORT_SYMBOL(sym, "")
+
+#define EXPORT_SYMBOL_GPL(sym)					\
+	__EXPORT_SYMBOL(sym, "_gpl")
+
+#define EXPORT_SYMBOL_GPL_FUTURE(sym)				\
+	__EXPORT_SYMBOL(sym, "_gpl_future")
+
+
+#ifdef CONFIG_UNUSED_SYMBOLS
+#define EXPORT_UNUSED_SYMBOL(sym) __EXPORT_SYMBOL(sym, "_unused")
+#define EXPORT_UNUSED_SYMBOL_GPL(sym) __EXPORT_SYMBOL(sym, "_unused_gpl")
+#else
+#define EXPORT_UNUSED_SYMBOL(sym)
+#define EXPORT_UNUSED_SYMBOL_GPL(sym)
+#endif
+
+#endif
+
+enum module_state
+{
+	MODULE_STATE_LIVE,
+	MODULE_STATE_COMING,
+	MODULE_STATE_GOING,
 };
 
 struct module;
@@ -629,10 +690,12 @@ int unregister_module_notifier(struct notifier_block *nb);
 
 extern void print_modules(void);
 
-static inline bool module_requested_async_probing(struct module *module)
-{
-	return module && module->async_probe_requested;
-}
+#else /* !CONFIG_MODULES... */
+#define EXPORT_SYMBOL(sym)
+#define EXPORT_SYMBOL_GPL(sym)
+#define EXPORT_SYMBOL_GPL_FUTURE(sym)
+#define EXPORT_UNUSED_SYMBOL(sym)
+#define EXPORT_UNUSED_SYMBOL_GPL(sym)
 
 #ifdef CONFIG_LIVEPATCH
 static inline bool is_livepatch_module(struct module *mod)
