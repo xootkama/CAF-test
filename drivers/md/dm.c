@@ -19,8 +19,7 @@
 #include <linux/idr.h>
 #include <linux/hdreg.h>
 #include <linux/delay.h>
-#include <linux/wait.h>
-#include <linux/wait_bit.h>
+#include <linux/wait_dm.h>
 #include <linux/pr.h>
 #include <linux/vmalloc.h>
 
