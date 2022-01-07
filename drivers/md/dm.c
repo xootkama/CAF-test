@@ -20,7 +20,7 @@
 #include <linux/hdreg.h>
 #include <linux/delay.h>
 #include <linux/wait.h>
-#include <kernel/sched/wait_bit.c>
+#include <linux/wait_bit.h>
 #include <linux/pr.h>
 #include <linux/vmalloc.h>
 
