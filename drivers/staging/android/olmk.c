@@ -190,11 +190,6 @@ static int list_do_fork_count_cmp(void *priv, struct list_head *a, struct list_h
     return 0;
 }
 
-static int task_points_open(struct inode *inode, struct file *file)
-{
-    return single_open(file, task_points_show, NULL);
-}
-
 static const struct file_operations proc_task_points_fops = {
     .open       = task_points_open,
     .read       = seq_read,
