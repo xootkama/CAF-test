@@ -172,59 +172,6 @@ static ssize_t psi_monitor_write( const char *buf,
 	return nbytes;
 }
 
-
-static int olmk_psi_monitor_init(void)
-{
-    int i, rc;
-  
-    for (i = 0; i < sizeof(psi_thresholds)/sizeof(psi_thresholds[0]); i++) {
-        rc = psi_monitor_write(psi_thresholds[i], strlen(psi_thresholds[i]) + 1, PSI_MEM);
-        if(rc  <= 0)
-            pr_err("psi_monitor_write failed\n");
-    }
-    return rc;
-}
-unsigned long lmk_points(struct task_struct *p)
-{
-    long points;
-    long adj, tasksize, taskpages, i;
-
-    adj = (long)p->signal->oom_score_adj;
-    
-    if (adj <= 0 || in_vfork(p) ||
-        test_bit(MMF_OOM_SKIP, &p->mm->flags)) {
-		return 0;
-    }
-
-    points = adj;
-    if (adj  >= CACHED_APP_MIN_ADJ)
-        points += cache_app_gap * (adj - CACHED_APP_MIN_ADJ + 1);
-
-    taskpages = get_mm_rss(p->mm) + (get_mm_counter(p->mm, MM_SWAPENTS) * zram_comp_ratio() / 100) +
-		atomic_long_read(&p->mm->nr_ptes) + mm_nr_pmds(p->mm);
-    tasksize = taskpages / 256;   // MB
-
-    for (i = adj / 100; i < adj_index; i++) {
-        if (tasksize >= tasksize_mb_to_adj[i]) {
-            points += 100;
-            tasksize -= tasksize_mb_to_adj[i];
-
-            if (tasksize > 0 && i == (adj_index - 1)) {
-                points += (tasksize / tasksize_mb_to_adj[i]) * 100 +
-                    (tasksize % tasksize_mb_to_adj[i] * 100) / tasksize_mb_to_adj[i];
-            }
-        } else {
-            points += (tasksize * 100) / tasksize_mb_to_adj[i];
-            break;
-        }
-    }
-    
-    if (has_capability_noaudit(p, CAP_SYS_ADMIN))
-		points -= (points * 3) / 100;
-
-    return points > 0 ? points : 1;
-}
-
 static int list_do_fork_count_cmp(void *priv, struct list_head *a, struct list_head *b)
 {
     struct task_points *tskp1 = NULL, *tskp2 = NULL;
@@ -242,62 +189,6 @@ static int list_do_fork_count_cmp(void *priv, struct list_head *a, struct list_h
 
     return 0;
 }
-
-static int task_points_show(struct seq_file *m, void *p)
-{
-    struct task_points *tskp = NULL, *tskp_new;
-	struct task_struct *ptsk, *tsk;
-    struct list_head tskp_head_list;
-    int oom_score_adj, tasksize, tasksize_swap, count = 0;
-    unsigned long points;
-
-    INIT_LIST_HEAD(&(tskp_head_list));
-    seq_printf(m, "-------------------------------------------------------\n");
-    seq_printf(m, "task_comm\t\tpid\t\ttasksize\t\ttasksize+swap\t\tadj\t\tpoints\n");
-	rcu_read_lock();
-	for_each_process(tsk) {
-
-		ptsk = find_lock_task_mm(tsk);
-		if (!ptsk)
-			continue;
-
-		oom_score_adj = ptsk->signal->oom_score_adj;
-        tasksize = get_mm_rss(ptsk->mm) + atomic_long_read(&ptsk->mm->nr_ptes) + mm_nr_pmds(ptsk->mm);
-        tasksize_swap = get_mm_rss(ptsk->mm) + (get_mm_counter(ptsk->mm, MM_SWAPENTS) * zram_comp_ratio() / 100) +
-                            atomic_long_read(&ptsk->mm->nr_ptes) + mm_nr_pmds(ptsk->mm);
-        points = lmk_points(ptsk);
-
-        if (points) {
-            tskp_new = &tskp_all[count];
-            memset(tskp_new, 0, sizeof(struct task_points));
-
-            snprintf(tskp_new->comm, TASK_COMM_LEN, "%s", (char *)ptsk->comm);
-            tskp_new->adj = oom_score_adj;
-            tskp_new->pid = ptsk->pid;
-            tskp_new->tasksize = tasksize/256;
-            tskp_new->tasksize_swap = tasksize_swap/256;
-            tskp_new->points = points;
-
-            list_add(&tskp_new->list, &(tskp_head_list));
-            count++;
-        }
-
-        task_unlock(ptsk);
-    }
-
-	rcu_read_unlock();
-    list_sort(NULL,  &(tskp_head_list), list_do_fork_count_cmp);
-
-    list_for_each_entry(tskp, &(tskp_head_list), list) {
-        seq_printf(m, "%-24s%-24d%-24d%-24d%-24d%-24ld\n", tskp->comm, tskp->pid,
-                tskp->tasksize, tskp->tasksize_swap, tskp->adj, tskp->points);
-    }
-    seq_printf(m, "-------------------------------------------------------\n");
-
-    seq_printf(m, "zram_comp_ratio = %lu\n", zram_comp_ratio());
-    return 0;
-}
-
 
 static int task_points_open(struct inode *inode, struct file *file)
 {
