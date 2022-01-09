@@ -195,4 +195,3 @@ static const struct file_operations proc_task_points_fops = {
     .read       = seq_read,
     .llseek     = seq_lseek,
     .release    = single_release,
-}
