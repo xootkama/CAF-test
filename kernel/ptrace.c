@@ -57,15 +57,6 @@ int ptrace_access_vm(struct task_struct *tsk, unsigned long addr,
 }
 
 
-void __ptrace_link(struct task_struct *child, struct task_struct *new_parent,
-		   const struct cred *ptracer_cred)
-{
-	BUG_ON(!list_empty(&child->ptrace_entry));
-	list_add(&child->ptrace_entry, &new_parent->ptraced);
-	child->parent = new_parent;
-	child->ptracer_cred = get_cred(ptracer_cred);
-}
-
 /*
  * ptrace a task: make the debugger its new parent and
  * move it to the ptrace list.
@@ -444,18 +435,9 @@ unlock_tasklist:
 unlock_creds:
 	mutex_unlock(&task->signal->cred_guard_mutex);
 out:
-	if (!retval) {
-		/*
-		 * We do not bother to change retval or clear JOBCTL_TRAPPING
-		 * if wait_on_bit() was interrupted by SIGKILL. The tracer will
-		 * not return to user-mode, it will exit and clear this bit in
-		 * __ptrace_unlink() if it wasn't already cleared by the tracee;
-		 * and until then nobody can ptrace this task.
-		 */
-		wait_on_bit(&task->jobctl, JOBCTL_TRAPPING_BIT, TASK_KILLABLE);
-		proc_ptrace_connector(task, PTRACE_ATTACH);
-	}
-
+	if (!retval)
+		wait_event(current->signal->wait_chldexit,
+			   !(task->jobctl & JOBCTL_TRAPPING));
 	return retval;
 }
 
