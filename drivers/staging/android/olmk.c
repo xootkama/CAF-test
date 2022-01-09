@@ -191,31 +191,8 @@ static int list_do_fork_count_cmp(void *priv, struct list_head *a, struct list_h
 }
 
 static const struct file_operations proc_task_points_fops = {
-    .open       = task_points_open,
+
     .read       = seq_read,
     .llseek     = seq_lseek,
     .release    = single_release,
-};
-
-static int __init olmk_init(void)
-{
-    struct proc_dir_entry *pentry;
-    int ret = 0;
-
-    ret = olmk_psi_monitor_init();
-	
-    psi_mem_notifier_register(&psi_mem_monitor_nb);
-	INIT_WORK(&psi_lmk_work, psi_lmk_run_work);
-    if (ret < 0) {
-        pr_err("olmk_psi_monitor_init failed\n");
-        return -1;
-    }
-
-	pentry = proc_create("task_points", S_IRWXUGO, NULL, &proc_task_points_fops);
-	if(!pentry) {
-		pr_err("create  proc ask_points failed.\n");
-		return -1;
-	}
-    return 0;
 }
-device_initcall(olmk_init);
