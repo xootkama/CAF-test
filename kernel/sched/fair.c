@@ -10973,17 +10973,17 @@ void nohz_balance_enter_idle(int cpu)
 		
 	}
 
-	if (test_bit(NOHZ_TICK_STOPPED, nohz_flags(cpu)))
+       ( if (test_bit(NOHZ_TICK_STOPPED, nohz_flags(cpu)))
 		return;
 		
 	/*
 	 * If we're a completely isolated CPU, we don't play.
 	 */
-	if (on_null_domain(cpu_rq(cpu)) || cpu_isolated(cpu))
+        (if (on_null_domain(cpu_rq(cpu)) || cpu_isolated(cpu))
 		return;
 
-	cpumask_set_cpu(cpu, nohz.idle_cpus_mask);
-	atomic_inc(&nohz.nr_cpus);
+	cpumask_set_cpu(cpu), nohz.idle_cpus_mask);
+	)atomic_inc(&nohz.nr_cpus);
 	set_bit(NOHZ_TICK_STOPPED, nohz_flags(cpu));
 }
 #endif
