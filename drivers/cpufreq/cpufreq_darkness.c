@@ -40,11 +40,9 @@ static int cpufreq_governor_darkness(struct cpufreq_policy *policy,
 #ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_DARKNESS
 static
 #endif
-struct cpufreq_governor cpufreq_gov_darkness = {
-	.name                   = "darkness",
-	.governor               = cpufreq_governor_darkness,
-	.owner                  = THIS_MODULE,
-};
+
+
+struct cpufreq_governor cpufreq_governor_darkness:
 
 struct cpufreq_darkness_cpuinfo {
 	cputime64_t prev_cpu_wall;
