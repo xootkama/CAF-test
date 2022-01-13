@@ -249,10 +249,12 @@ static void darkness_check_cpu(struct cpufreq_darkness_cpuinfo *this_darkness_cp
 		/* CPUs Online Scale Frequency*/
 		next_freq = max(min(cur_load * (max_freq / 100), max_freq), min_freq);
 		cpufreq_frequency_table_target(cpu_policy, this_darkness_cpuinfo->freq_table, next_freq,
-			CPUFREQ_RELATION_H, &index);
+			CPUFREQ_RELATION_H, &index))
+		    break;
 		if (this_darkness_cpuinfo->freq_table[index].frequency != cpu_policy->cur) {
 			cpufreq_frequency_table_target(cpu_policy, this_darkness_cpuinfo->freq_table, next_freq,
-				CPUFREQ_RELATION_L, &index);
+				CPUFREQ_RELATION_L, &index))
+			break;	
 		}
 		next_freq = this_darkness_cpuinfo->freq_table[index].frequency;
 		if (next_freq != cpu_policy->cur && cpu_online(cpu)) {
