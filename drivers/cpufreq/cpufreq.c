@@ -2374,7 +2374,6 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 	if (ret)
 		return ret;
 
-<<<<<<< HEAD
 	/* notification of the new policy */
 	blocking_notifier_call_chain(&cpufreq_policy_notifier_list,
 			CPUFREQ_NOTIFY, new_policy);
@@ -2389,18 +2388,6 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 //Jiheng.Xie@TECH.BSP.Performance,2019-07-29,add for cpufreq limit info
 	strncpy(policy->change_comm, current->comm, TASK_COMM_LEN);
 #endif
-=======
-	/*
-	 * Resolve policy min/max to available frequencies. It ensures
-	 * no frequency resolution will neither overshoot the requested maximum
-	 * nor undershoot the requested minimum.
-	 */
-	policy->min = new_data.min;
-	policy->max = new_data.max;
-	policy->min = __resolve_freq(policy, policy->min, CPUFREQ_RELATION_L);
-	policy->max = __resolve_freq(policy, policy->max, CPUFREQ_RELATION_H);
-	trace_cpu_frequency_limits(policy);
->>>>>>> 9053ab4dfc1b4 (cpufreq: Make policy min/max hard requirements)
 
 	policy->cached_target_freq = UINT_MAX;
 
