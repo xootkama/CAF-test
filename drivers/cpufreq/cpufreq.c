@@ -85,11 +85,6 @@ static int cpufreq_start_governor(struct cpufreq_policy *policy);
 static void cpufreq_stop_governor(struct cpufreq_policy *policy);
 static void cpufreq_governor_limits(struct cpufreq_policy *policy);
 
-static inline void cpufreq_stop_governor(struct cpufreq_policy *policy)
-{
-	(void)cpufreq_governor(policy, CPUFREQ_GOV_STOP);
-}
-
 /**
  * Two notifier lists: the "policy" list is involved in the
  * validation process for a new CPU frequency policy; the
@@ -1782,9 +1777,15 @@ void cpufreq_suspend(void)
 	pr_debug("%s: Suspending Governors\n", __func__);
 
 	for_each_active_policy(policy) {
-		down_write(&policy->rwsem);
-		cpufreq_stop_governor(policy);
-		up_write(&policy->rwsem);
+		if (has_target()) {
+			down_write(&policy->rwsem);
+			cpufreq_stop_governor(policy);
+			up_write(&policy->rwsem);
+		}
+
+		if (cpufreq_driver->suspend && cpufreq_driver->suspend(policy))
+			pr_err("%s: Failed to suspend driver: %p\n", __func__,
+				policy);
 	}
 
 suspend:
