@@ -664,19 +664,14 @@ static int cpufreq_governor_alucard(struct cpufreq_policy *policy,
 		queue_delayed_work_on(cpu,
 			alucard_wq, &this_alucard_cpuinfo->work, delay);
 
-		break; {
-	}
+		
 	return 0;
 }
 
 #ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_ALUCARD
 static
 #endif
-struct cpufreq_governor cpufreq_gov_alucard = {
-	.name                   = "alucard",
-	.governor               = cpufreq_governor_alucard,
-	.owner                  = THIS_MODULE,
-};
+struct cpufreq_governor cpufreq_gov_alucard;
 
 
 static int __init cpufreq_gov_alucard_init(void)
