@@ -628,24 +628,7 @@ static int cpufreq_governor_alucard(struct cpufreq_policy *policy,
 	this_alucard_cpuinfo = &per_cpu(od_alucard_cpuinfo, cpu);
 
 	switch (event) {
-	case CPUFREQ_GOV_START:
-		if (!policy)
-			return -EINVAL;
 
-		mutex_lock(&alucard_mutex);
-		this_alucard_cpuinfo->freq_table = cpufreq_frequency_get_table(cpu);
-		if (!this_alucard_cpuinfo->freq_table) {
-			mutex_unlock(&alucard_mutex);
-			return -EINVAL;
-		}
-		cpufreq_frequency_table_policy_minmax_limits(policy,
-				this_alucard_cpuinfo);	
-
-		for_each_cpu(j, policy->cpus) {
-			struct cpufreq_alucard_cpuinfo *j_alucard_cpuinfo = &per_cpu(od_alucard_cpuinfo, j);
-
-			j_alucard_cpuinfo->prev_cpu_idle = get_cpu_idle_time(j,
-				&j_alucard_cpuinfo->prev_cpu_wall, 0);
 		}
 
 		alucard_enable++;
@@ -681,41 +664,7 @@ static int cpufreq_governor_alucard(struct cpufreq_policy *policy,
 		queue_delayed_work_on(cpu,
 			alucard_wq, &this_alucard_cpuinfo->work, delay);
 
-		break;
-	case CPUFREQ_GOV_STOP:
-		cancel_delayed_work_sync(&this_alucard_cpuinfo->work);
-
-		mutex_lock(&alucard_mutex);
-		mutex_destroy(&this_alucard_cpuinfo->timer_mutex);
-
-		this_alucard_cpuinfo->governor_enabled = false;
-
-		this_alucard_cpuinfo->cur_policy = NULL;
-
-		alucard_enable--;
-		if (!alucard_enable) {
-			sysfs_remove_group(cpufreq_global_kobject,
-					   &alucard_attr_group);
-		}
-
-		mutex_unlock(&alucard_mutex);
-
-		break;
-	case CPUFREQ_GOV_LIMITS:
-		if (!this_alucard_cpuinfo->cur_policy
-			 || !policy) {
-			pr_debug("Unable to limit cpu freq due to cur_policy == NULL\n");
-			return -EPERM;
-		}
-		mutex_lock(&this_alucard_cpuinfo->timer_mutex);
-		__cpufreq_driver_target(this_alucard_cpuinfo->cur_policy,
-				policy->cur, CPUFREQ_RELATION_L);
-
-		cpufreq_frequency_table_policy_minmax_limits(policy,
-				this_alucard_cpuinfo);
-		mutex_unlock(&this_alucard_cpuinfo->timer_mutex);
-
-		break;
+		break; {
 	}
 	return 0;
 }
