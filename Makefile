@@ -833,14 +833,7 @@ endif
 
 # These warnings generated too much noise in a regular build.
 # Use make W=1 to enable them (see scripts/Makefile.extrawarn)
-<<<<<<< HEAD
 ifdef CONFIG_FRAME_rR
-=======
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
-
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
-ifdef CONFIG_FRAME_POINTER
->>>>>>> 17d24342bc3611b32dfd3e516d467f2219812734
 KBUILD_CFLAGS	+= -fno-omit-frame-pointer -fno-optimize-sibling-calls
 else
 # Some targets (ARM with Thumb2, for example), can't be built with frame
