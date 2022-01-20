@@ -369,49 +369,31 @@ ufs_get_pm_lvl_to_link_pwr_state(enum ufs_pm_level lvl)
 	return ufs_pm_lvl_states[lvl].link_state;
 }
 
-static inline void ufshcd_set_card_online(struct ufs_hba *hba)
-{
-	atomic_set(&hba->card_state, UFS_CARD_STATE_ONLINE);
-}
+static struct ufs_dev_fix ufs_fixups[] = {
+	/* UFS cards deviations table */
+	UFS_FIX(UFS_VENDOR_MICRON, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL, UFS_DEVICE_NO_VCCQ),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_RECOVERY_FROM_DL_NAC_ERRORS),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_NO_FASTAUTO),
+	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_HOST_PA_TACTIVATE),
+	UFS_FIX(UFS_VENDOR_TOSHIBA, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
+	UFS_FIX(UFS_VENDOR_TOSHIBA, "THGLF2G9C8KBADG",
+		UFS_DEVICE_QUIRK_PA_TACTIVATE),
+	UFS_FIX(UFS_VENDOR_TOSHIBA, "THGLF2G9D8KBADG",
+		UFS_DEVICE_QUIRK_PA_TACTIVATE),
+	UFS_FIX(UFS_VENDOR_SKHYNIX, UFS_ANY_MODEL, UFS_DEVICE_NO_VCCQ),
+	UFS_FIX(UFS_VENDOR_SKHYNIX, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_HOST_PA_SAVECONFIGTIME),
 
-static inline void ufshcd_set_card_offline(struct ufs_hba *hba)
-{
-	atomic_set(&hba->card_state, UFS_CARD_STATE_OFFLINE);
-}
-
-static inline bool ufshcd_is_card_online(struct ufs_hba *hba)
-{
-	return (atomic_read(&hba->card_state) == UFS_CARD_STATE_ONLINE);
-}
-
-static inline bool ufshcd_is_card_offline(struct ufs_hba *hba)
-{
-	return (atomic_read(&hba->card_state) == UFS_CARD_STATE_OFFLINE);
-}
-
-static inline enum ufs_pm_level
-ufs_get_desired_pm_lvl_for_dev_link_state(enum ufs_dev_pwr_mode dev_state,
-					enum uic_link_state link_state)
-{
-	enum ufs_pm_level lvl;
-
-	for (lvl = UFS_PM_LVL_0; lvl < UFS_PM_LVL_MAX; lvl++) {
-		if ((ufs_pm_lvl_states[lvl].dev_state == dev_state) &&
-			(ufs_pm_lvl_states[lvl].link_state == link_state))
-			return lvl;
-	}
-
-	/* if no match found, return the level 0 */
-	return UFS_PM_LVL_0;
-}
-
-static inline bool ufshcd_is_valid_pm_lvl(int lvl)
-{
-	if (lvl >= 0 && lvl < ARRAY_SIZE(ufs_pm_lvl_states))
-		return true;
-	else
-		return false;
-}
+	END_FIX
+};
 
 static irqreturn_t ufshcd_intr(int irq, void *__hba);
 static irqreturn_t ufshcd_tmc_handler(struct ufs_hba *hba);
@@ -915,7 +897,14 @@ static void ufshcd_print_tmrs(struct ufs_hba *hba, unsigned long bitmap)
 
 static void ufshcd_print_fsm_state(struct ufs_hba *hba)
 {
-	int err = 0, tx_fsm_val = 0, rx_fsm_val = 0;
+	int rc = 0;
+	bool flush_result;
+	unsigned long flags;
+
+	if (!ufshcd_is_clkgating_allowed(hba))
+		goto out;
+	spin_lock_irqsave(hba->host->host_lock, flags);
+	hba->clk_gating.active_reqs++;
 
 	err = ufshcd_dme_get(hba,
 			UIC_ARG_MIB_SEL(MPHY_TX_FSM_STATE,
@@ -931,10 +920,56 @@ static void ufshcd_print_fsm_state(struct ufs_hba *hba)
 			rx_fsm_val, err);
 }
 
-static void ufshcd_print_host_state(struct ufs_hba *hba)
-{
-	if (!(hba->ufshcd_dbg_print & UFSHCD_DBG_PRINT_HOST_STATE_EN))
-		return;
+start:
+	switch (hba->clk_gating.state) {
+	case CLKS_ON:
+		/*
+		 * Wait for the ungate work to complete if in progress.
+		 * Though the clocks may be in ON state, the link could
+		 * still be in hibner8 state if hibern8 is allowed
+		 * during clock gating.
+		 * Make sure we exit hibern8 state also in addition to
+		 * clocks being ON.
+		 */
+		if (ufshcd_can_hibern8_during_gating(hba) &&
+		    ufshcd_is_link_hibern8(hba)) {
+			if (async) {
+				rc = -EAGAIN;
+				hba->clk_gating.active_reqs--;
+				break;
+			}
+			spin_unlock_irqrestore(hba->host->host_lock, flags);
+			flush_result = flush_work(&hba->clk_gating.ungate_work);
+			if (hba->clk_gating.is_suspended && !flush_result)
+				goto out;
+			spin_lock_irqsave(hba->host->host_lock, flags);
+			goto start;
+		}
+		break;
+	case REQ_CLKS_OFF:
+		if (cancel_delayed_work(&hba->clk_gating.gate_work)) {
+			hba->clk_gating.state = CLKS_ON;
+			break;
+		}
+		/*
+		 * If we here, it means gating work is either done or
+		 * currently running. Hence, fall through to cancel gating
+		 * work and to enable clocks.
+		 */
+	case CLKS_OFF:
+		scsi_block_requests(hba->host);
+		hba->clk_gating.state = REQ_CLKS_ON;
+		schedule_work(&hba->clk_gating.ungate_work);
+		/*
+		 * fall through to check if we should wait for this
+		 * work to be done or not.
+		 */
+	case REQ_CLKS_ON:
+		if (async) {
+			rc = -EAGAIN;
+			hba->clk_gating.active_reqs--;
+			break;
+		}
 
 	dev_err(hba->dev, "UFS Host state=%d\n", hba->ufshcd_state);
 	dev_err(hba->dev, "lrb in use=0x%lx, outstanding reqs=0x%lx tasks=0x%lx\n",
@@ -7522,24 +7557,31 @@ static u32 ufshcd_get_max_icc_level(int sup_curr_uA, u32 start_scan, char *buff)
 static u32 ufshcd_find_max_sup_active_icc_level(struct ufs_hba *hba,
 							u8 *desc_buf, int len)
 {
-	u32 icc_level = 0;
+	u32 intr_status, enabled_intr_status = 0;
+	irqreturn_t retval = IRQ_NONE;
+	struct ufs_hba *hba = __hba;
+	int retries = hba->nutrs;
+
+	spin_lock(hba->host->host_lock);
+	intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
 
 	/*
 	 * VCCQ rail is optional for removable UFS card and also most of the
 	 * vendors don't use this rail for embedded UFS devices as well. So
 	 * it is normal that VCCQ rail may not be provided for given platform.
 	 */
-	if (!hba->vreg_info.vcc || !hba->vreg_info.vccq2) {
-		dev_err(hba->dev, "%s: Regulator capability was not set, bActiveICCLevel=%d\n",
-			__func__, icc_level);
-		goto out;
-	}
+	while (intr_status && retries--) {
+		enabled_intr_status =
+			intr_status & ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
+		if (intr_status)
+			ufshcd_writel(hba, intr_status, REG_INTERRUPT_STATUS);
+		if (enabled_intr_status) {
+			ufshcd_sl_intr(hba, enabled_intr_status);
+			retval = IRQ_HANDLED;
+		}
 
-	if (hba->vreg_info.vcc && hba->vreg_info.vcc->max_uA)
-		icc_level = ufshcd_get_max_icc_level(
-				hba->vreg_info.vcc->max_uA,
-				POWER_DESC_MAX_ACTV_ICC_LVLS - 1,
-				&desc_buf[PWR_DESC_ACTIVE_LVLS_VCC_0]);
+		intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
+	}
 
 	if (hba->vreg_info.vccq && hba->vreg_info.vccq->max_uA)
 		icc_level = ufshcd_get_max_icc_level(
@@ -7754,31 +7796,34 @@ out:
  */
 static int ufshcd_tune_pa_hibern8time(struct ufs_hba *hba)
 {
-	int ret = 0;
-	u32 local_tx_hibern8_time_cap = 0, peer_rx_hibern8_time_cap = 0;
-	u32 max_hibern8_time, tuned_pa_hibern8time;
+	struct Scsi_Host *host;
+	struct ufs_hba *hba;
+	u32 pos;
+	int err;
+	u8 resp = 0xF, lun;
+	unsigned long flags;
 
-	ret = ufshcd_dme_get(hba,
-			     UIC_ARG_MIB_SEL(TX_HIBERN8TIME_CAPABILITY,
-					UIC_ARG_MPHY_TX_GEN_SEL_INDEX(0)),
-				  &local_tx_hibern8_time_cap);
-	if (ret)
+	host = cmd->device->host;
+	hba = shost_priv(host);
+
+	lun = ufshcd_scsi_to_upiu_lun(cmd->device->lun);
+	err = ufshcd_issue_tm_cmd(hba, lun, 0, UFS_LOGICAL_RESET, &resp);
+	if (err || resp != UPIU_TASK_MANAGEMENT_FUNC_COMPL) {
+		if (!err)
+			err = resp;
 		goto out;
 
-	ret = ufshcd_dme_peer_get(hba,
-				  UIC_ARG_MIB_SEL(RX_HIBERN8TIME_CAPABILITY,
-					UIC_ARG_MPHY_RX_GEN_SEL_INDEX(0)),
-				  &peer_rx_hibern8_time_cap);
-	if (ret)
-		goto out;
-
-	max_hibern8_time = max(local_tx_hibern8_time_cap,
-			       peer_rx_hibern8_time_cap);
-	/* make sure proper unit conversion is applied */
-	tuned_pa_hibern8time = ((max_hibern8_time * HIBERN8TIME_UNIT_US)
-				/ PA_HIBERN8_TIME_UNIT_US);
-	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(PA_HIBERN8TIME),
-			     tuned_pa_hibern8time);
+	/* clear the commands that were pending for corresponding LUN */
+	for_each_set_bit(pos, &hba->outstanding_reqs, hba->nutrs) {
+		if (hba->lrb[pos].lun == lun) {
+			err = ufshcd_clear_cmd(hba, pos);
+			if (err)
+				break;
+		}
+	}
+	spin_lock_irqsave(host->host_lock, flags);
+	ufshcd_transfer_req_compl(hba);
+	spin_unlock_irqrestore(host->host_lock, flags);
 out:
 	return ret;
 }
@@ -10472,15 +10517,7 @@ static int ufshcd_devfreq_scale(struct ufs_hba *hba, bool scale_up)
 	if (ret)
 		goto out;
 
-	ufshcd_custom_cmd_log(hba, "waited-for-DB-clear");
-
-	/* scale down the gear before scaling down clocks */
-	if (!scale_up) {
-		ret = ufshcd_scale_gear(hba, false);
-		if (ret)
-			goto clk_scaling_unprepare;
-		ufshcd_custom_cmd_log(hba, "Gear-scaled-down");
-	}
+	pm_runtime_get_sync(hba->dev);
 
 	/*
 	 * If auto hibern8 is supported then put the link in
