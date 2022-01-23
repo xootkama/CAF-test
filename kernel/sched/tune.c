@@ -17,97 +17,6 @@ unsigned int sysctl_sched_cfs_boost __read_mostly;
 bool schedtune_initialized = false;
 #endif
 
-unsigned int sysctl_sched_cfs_boost __read_mostly;
-
-extern struct reciprocal_value schedtune_spc_rdiv;
-struct target_nrg schedtune_target_nrg;
-
-/* Performance Boost region (B) threshold params */
-static int perf_boost_idx;
-
-/* Performance Constraint region (C) threshold params */
-static int perf_constrain_idx;
-
-/**
- * Performance-Energy (P-E) Space thresholds constants
- */
-struct threshold_params {
-	int nrg_gain;
-	int cap_gain;
-};
-
-/*
- * System specific P-E space thresholds constants
- */
-static struct threshold_params
-threshold_gains[] = {
-	{ 0, 5 }, /*   < 10% */
-	{ 1, 5 }, /*   < 20% */
-	{ 2, 5 }, /*   < 30% */
-	{ 3, 5 }, /*   < 40% */
-	{ 4, 5 }, /*   < 50% */
-	{ 5, 4 }, /*   < 60% */
-	{ 5, 3 }, /*   < 70% */
-	{ 5, 2 }, /*   < 80% */
-	{ 5, 1 }, /*   < 90% */
-	{ 5, 0 }  /* <= 100% */
-};
-
-static int
-__schedtune_accept_deltas(int nrg_delta, int cap_delta,
-			  int perf_boost_idx, int perf_constrain_idx)
-{
-	int payoff = -INT_MAX;
-	int gain_idx = -1;
-
-	/* Performance Boost (B) region */
-	if (nrg_delta >= 0 && cap_delta > 0)
-		gain_idx = perf_boost_idx;
-	/* Performance Constraint (C) region */
-	else if (nrg_delta < 0 && cap_delta <= 0)
-		gain_idx = perf_constrain_idx;
-
-	/* Default: reject schedule candidate */
-	if (gain_idx == -1)
-		return payoff;
-
-	/*
-	 * Evaluate "Performance Boost" vs "Energy Increase"
-	 *
-	 * - Performance Boost (B) region
-	 *
-	 *   Condition: nrg_delta > 0 && cap_delta > 0
-	 *   Payoff criteria:
-	 *     cap_gain / nrg_gain  < cap_delta / nrg_delta =
-	 *     cap_gain * nrg_delta < cap_delta * nrg_gain
-	 *   Note that since both nrg_gain and nrg_delta are positive, the
-	 *   inequality does not change. Thus:
-	 *
-	 *     payoff = (cap_delta * nrg_gain) - (cap_gain * nrg_delta)
-	 *
-	 * - Performance Constraint (C) region
-	 *
-	 *   Condition: nrg_delta < 0 && cap_delta < 0
-	 *   payoff criteria:
-	 *     cap_gain / nrg_gain  > cap_delta / nrg_delta =
-	 *     cap_gain * nrg_delta < cap_delta * nrg_gain
-	 *   Note that since nrg_gain > 0 while nrg_delta < 0, the
-	 *   inequality change. Thus:
-	 *
-	 *     payoff = (cap_delta * nrg_gain) - (cap_gain * nrg_delta)
-	 *
-	 * This means that, in case of same positive defined {cap,nrg}_gain
-	 * for both the B and C regions, we can use the same payoff formula
-	 * where a positive value represents the accept condition.
-	 */
-	payoff  = cap_delta * threshold_gains[gain_idx].nrg_gain;
-	payoff -= nrg_delta * threshold_gains[gain_idx].cap_gain;
-
-	return payoff;
-}
-
-#ifdef CONFIG_CGROUP_SCHEDTUNE
-
 /*
  * EAS scheduler tunables for task groups.
  *
@@ -334,7 +243,7 @@ struct boost_groups {
 /* Boost groups affecting each CPU in the system */
 DEFINE_PER_CPU(struct boost_groups, cpu_boost_groups);
 
-#ifdef CONFIG_SCHED_WALT
+#ifdef CONFIG_SCHED_HMP
 static inline void init_sched_boost(struct schedtune *st)
 {
 	st->sched_boost_no_override = false;
@@ -342,6 +251,11 @@ static inline void init_sched_boost(struct schedtune *st)
 	st->sched_boost_enabled_backup = st->sched_boost_enabled;
 	st->colocate = false;
 	st->colocate_update_disabled = false;
+}
+
+bool same_schedtune(struct task_struct *tsk1, struct task_struct *tsk2)
+{
+	return task_schedtune(tsk1) == task_schedtune(tsk2);
 }
 
 void update_cgroup_boost_settings(void)
@@ -378,6 +292,71 @@ bool task_sched_boost(struct task_struct *p)
 
 	return st->sched_boost_enabled;
 }
+
+static u64
+sched_boost_override_read(struct cgroup_subsys_state *css,
+			struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->sched_boost_no_override;
+}
+
+static int sched_boost_override_write(struct cgroup_subsys_state *css,
+			struct cftype *cft, u64 override)
+{
+	struct schedtune *st = css_st(css);
+
+	st->sched_boost_no_override = !!override;
+
+	return 0;
+}
+
+static u64 sched_boost_enabled_read(struct cgroup_subsys_state *css,
+			struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->sched_boost_enabled;
+}
+
+static int sched_boost_enabled_write(struct cgroup_subsys_state *css,
+			struct cftype *cft, u64 enable)
+{
+	struct schedtune *st = css_st(css);
+
+	st->sched_boost_enabled = !!enable;
+	st->sched_boost_enabled_backup = st->sched_boost_enabled;
+
+	return 0;
+}
+
+static u64 sched_colocate_read(struct cgroup_subsys_state *css,
+			struct cftype *cft)
+{
+	struct schedtune *st = css_st(css);
+
+	return st->colocate;
+}
+
+static int sched_colocate_write(struct cgroup_subsys_state *css,
+			struct cftype *cft, u64 colocate)
+{
+	struct schedtune *st = css_st(css);
+
+	if (st->colocate_update_disabled)
+		return -EPERM;
+
+	st->colocate = !!colocate;
+	st->colocate_update_disabled = true;
+	return 0;
+}
+
+#else /* CONFIG_SCHED_HMP */
+
+static inline void init_sched_boost(struct schedtune *st) { }
+
+#endif /* CONFIG_SCHED_HMP */
 
 static u64
 sched_boost_override_read(struct cgroup_subsys_state *css,
@@ -888,6 +867,22 @@ boost_write(struct cgroup_subsys_state *css, struct cftype *cft,
 	return 0;
 }
 
+static void schedtune_attach(struct cgroup_taskset *tset)
+{
+	struct task_struct *task;
+	struct cgroup_subsys_state *css;
+	struct schedtune *st;
+	bool colocate;
+
+	cgroup_taskset_first(tset, &css);
+	st = css_st(css);
+
+	colocate = st->colocate;
+
+	cgroup_taskset_for_each(task, css, tset)
+		sync_cgroup_colocation(task, colocate);
+}
+
 static struct cftype files[] = {
 #ifdef CONFIG_SCHED_WALT
 	{
@@ -1034,211 +1029,3 @@ schedtune_init_cgroups(void)
 	schedtune_initialized = true;
 }
 
-#else /* CONFIG_CGROUP_SCHEDTUNE */
-
-int
-schedtune_accept_deltas(int nrg_delta, int cap_delta,
-			struct task_struct *task)
-{
-	/* Optimal (O) region */
-	if (nrg_delta < 0 && cap_delta > 0) {
-		trace_sched_tune_filter(nrg_delta, cap_delta, 0, 0, 1, 0);
-		return INT_MAX;
-	}
-
-	/* Suboptimal (S) region */
-	if (nrg_delta > 0 && cap_delta < 0) {
-		trace_sched_tune_filter(nrg_delta, cap_delta, 0, 0, -1, 5);
-		return -INT_MAX;
-	}
-
-	return __schedtune_accept_deltas(nrg_delta, cap_delta,
-			perf_boost_idx, perf_constrain_idx);
-}
-
-#endif /* CONFIG_CGROUP_SCHEDTUNE */
-
-int
-sysctl_sched_cfs_boost_handler(struct ctl_table *table, int write,
-			       void __user *buffer, size_t *lenp,
-			       loff_t *ppos)
-{
-	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
-	unsigned threshold_idx;
-	int boost_pct;
-
-	if (ret || !write)
-		return ret;
-
-	if (sysctl_sched_cfs_boost < -100 || sysctl_sched_cfs_boost > 100)
-		return -EINVAL;
-	boost_pct = sysctl_sched_cfs_boost;
-
-	/*
-	 * Update threshold params for Performance Boost (B)
-	 * and Performance Constraint (C) regions.
-	 * The current implementatio uses the same cuts for both
-	 * B and C regions.
-	 */
-	threshold_idx = clamp(boost_pct, 0, 99) / 10;
-	perf_boost_idx = threshold_idx;
-	perf_constrain_idx = threshold_idx;
-
-	return 0;
-}
-
-#ifdef CONFIG_SCHED_DEBUG
-static void
-schedtune_test_nrg(unsigned long delta_pwr)
-{
-	unsigned long test_delta_pwr;
-	unsigned long test_norm_pwr;
-	int idx;
-
-	/*
-	 * Check normalization constants using some constant system
-	 * energy values
-	 */
-	pr_info("schedtune: verify normalization constants...\n");
-	for (idx = 0; idx < 6; ++idx) {
-		test_delta_pwr = delta_pwr >> idx;
-
-		/* Normalize on max energy for target platform */
-		test_norm_pwr = reciprocal_divide(
-					test_delta_pwr << SCHED_CAPACITY_SHIFT,
-					schedtune_target_nrg.rdiv);
-
-		pr_info("schedtune: max_pwr/2^%d: %4lu => norm_pwr: %5lu\n",
-			idx, test_delta_pwr, test_norm_pwr);
-	}
-}
-#else
-#define schedtune_test_nrg(delta_pwr)
-#endif
-
-/*
- * Compute the min/max power consumption of a cluster and all its CPUs
- */
-static void
-schedtune_add_cluster_nrg(
-		struct sched_domain *sd,
-		struct sched_group *sg,
-		struct target_nrg *ste)
-{
-	struct sched_domain *sd2;
-	struct sched_group *sg2;
-
-	struct cpumask *cluster_cpus;
-	char str[32];
-
-	unsigned long min_pwr;
-	unsigned long max_pwr;
-	int cpu;
-
-	/* Get Cluster energy using EM data for the first CPU */
-	cluster_cpus = sched_group_cpus(sg);
-	snprintf(str, 32, "CLUSTER[%*pbl]",
-		 cpumask_pr_args(cluster_cpus));
-
-	min_pwr = sg->sge->idle_states[sg->sge->nr_idle_states - 1].power;
-	max_pwr = sg->sge->cap_states[sg->sge->nr_cap_states - 1].power;
-	pr_info("schedtune: %-17s min_pwr: %5lu max_pwr: %5lu\n",
-		str, min_pwr, max_pwr);
-
-	/*
-	 * Keep track of this cluster's energy in the computation of the
-	 * overall system energy
-	 */
-	ste->min_power += min_pwr;
-	ste->max_power += max_pwr;
-
-	/* Get CPU energy using EM data for each CPU in the group */
-	for_each_cpu(cpu, cluster_cpus) {
-		/* Get a SD view for the specific CPU */
-		for_each_domain(cpu, sd2) {
-			/* Get the CPU group */
-			sg2 = sd2->groups;
-			min_pwr = sg2->sge->idle_states[sg2->sge->nr_idle_states - 1].power;
-			max_pwr = sg2->sge->cap_states[sg2->sge->nr_cap_states - 1].power;
-
-			ste->min_power += min_pwr;
-			ste->max_power += max_pwr;
-
-			snprintf(str, 32, "CPU[%d]", cpu);
-			pr_info("schedtune: %-17s min_pwr: %5lu max_pwr: %5lu\n",
-				str, min_pwr, max_pwr);
-
-			/*
-			 * Assume we have EM data only at the CPU and
-			 * the upper CLUSTER level
-			 */
-			break;
-		}
-	}
-}
-
-/*
- * Initialize the constants required to compute normalized energy.
- * The values of these constants depends on the EM data for the specific
- * target system and topology.
- * Thus, this function is expected to be called by the code
- * that bind the EM to the topology information.
- */
-static int
-schedtune_init(void)
-{
-	struct target_nrg *ste = &schedtune_target_nrg;
-	unsigned long delta_pwr = 0;
-	struct sched_domain *sd;
-	struct sched_group *sg;
-
-	pr_info("schedtune: init normalization constants...\n");
-	ste->max_power = 0;
-	ste->min_power = 0;
-
-	rcu_read_lock();
-
-	/*
-	 * When EAS is in use, we always have a pointer to the highest SD
-	 * which provides EM data.
-	 */
-	sd = rcu_dereference(per_cpu(sd_ea, cpumask_first(cpu_online_mask)));
-	if (!sd) {
-		pr_info("schedtune: no energy model data\n");
-		goto nodata;
-	}
-
-	sg = sd->groups;
-	do {
-		schedtune_add_cluster_nrg(sd, sg, ste);
-	} while (sg = sg->next, sg != sd->groups);
-
-	rcu_read_unlock();
-
-	pr_info("schedtune: %-17s min_pwr: %5lu max_pwr: %5lu\n",
-		"SYSTEM", ste->min_power, ste->max_power);
-
-	/* Compute normalization constants */
-	delta_pwr = ste->max_power - ste->min_power;
-	ste->rdiv = reciprocal_value(delta_pwr);
-	pr_info("schedtune: using normalization constants mul: %u sh1: %u sh2: %u\n",
-		ste->rdiv.m, ste->rdiv.sh1, ste->rdiv.sh2);
-
-	schedtune_test_nrg(delta_pwr);
-
-#ifdef CONFIG_CGROUP_SCHEDTUNE
-	schedtune_init_cgroups();
-#else
-	pr_info("schedtune: configured to support global boosting only\n");
-#endif /* CONFIG_CGROUP_SCHEDTUNE */
-
-	schedtune_spc_rdiv = reciprocal_value(100);
-
-	return 0;
-
-nodata:
-	pr_warning("schedtune: disabled!\n");
-	rcu_read_unlock();
-	return -EINVAL;
-}
-postcore_initcall(schedtune_init);
